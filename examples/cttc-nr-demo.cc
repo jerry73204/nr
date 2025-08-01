@@ -58,6 +58,8 @@ $ ./ns3 run "cttc-nr-demo --PrintHelp"
 #include "ns3/nr-module.h"
 #include "ns3/point-to-point-module.h"
 
+#include "3gpp-outdoor-calibration/cttc-nr-3gpp-calibration.h"
+
 /*
  * Use, always, the namespace ns3. All the NR classes are inside such namespace.
  */
@@ -70,6 +72,25 @@ using namespace ns3;
  */
 NS_LOG_COMPONENT_DEFINE("CttcNrDemo");
 
+// Function to periodically print UE position
+void
+PrintUePosition(NodeContainer ueNodes)
+{
+    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+    {
+        Ptr<MobilityModel> mobility = ueNodes.Get(i)->GetObject<MobilityModel>();
+        Vector pos = mobility->GetPosition();
+        NS_LOG_UNCOND("Time=" << Simulator::Now().GetSeconds() << "s, UE" << i
+                              << " position: x=" << pos.x << " y=" << pos.y << " z=" << pos.z);
+    }
+
+    // Schedule next position print
+    if (!Simulator::IsFinished())
+    {
+        Simulator::Schedule(Seconds(0.5), &PrintUePosition, ueNodes);
+    }
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -79,8 +100,8 @@ main(int argc, char* argv[])
      * possibly overridden below when command-line arguments are parsed.
      */
     // Scenario parameters (that we will use inside this script):
-    uint16_t gNbNum = 1;
-    uint16_t ueNumPergNb = 2;
+    uint16_t gNbNum = 2;
+    uint16_t ueNumPergNb = 1;
     bool logging = false;
     bool doubleOperationalBand = true;
 
@@ -92,7 +113,7 @@ main(int argc, char* argv[])
 
     // Simulation parameters. Please don't use double to indicate seconds; use
     // ns-3 Time values which use integers to avoid portability issues.
-    Time simTime = MilliSeconds(1000);
+    Time simTime = MilliSeconds(10000);
     Time udpAppStartTime = MilliSeconds(400);
 
     // NR parameters (Reference: 3GPP TR 38.901 V17.0.0 (Release 17)
@@ -108,9 +129,20 @@ main(int argc, char* argv[])
     double bandwidthBand2 = 50e6;
     double totalTxPower = 35;
 
+    // Handover parameters with default values
+    bool handoverEnabled = true;     // Default: enable handover
+    bool enableMobility = true;      // Default: enable UE mobility
+    double ueSpeed = 35.0;           // Default: 10 m/s
+    // double handoverHysteresis = 3.0; // Default: 3 dB hysteresis
+    uint16_t timeToTrigger = 256;    // Default: 256 ms
+    double minDistance = 10.0;       // Default: start 10m from first gNB
+    double maxDistance = 50.0;       // Default: start within 50m
+
     // Where we will store the output files.
     std::string simTag = "default";
     std::string outputDir = "./";
+
+    Parameters params;
 
     /*
      * From here, we instruct the ns3::CommandLine class of all the input parameters
@@ -157,6 +189,16 @@ main(int argc, char* argv[])
                  "tag to be appended to output filenames to distinguish simulation campaigns",
                  simTag);
     cmd.AddValue("outputDir", "directory where to store simulation results", outputDir);
+    // Handover parameters
+    cmd.AddValue("handover", "Enable handover (default: true)", handoverEnabled);
+    cmd.AddValue("enableMobility", "Enable UE mobility (default: true)", enableMobility);
+    cmd.AddValue("ueSpeed", "UE speed in m/s (default: 10.0)", ueSpeed);
+    // cmd.AddValue("handoverHysteresis",
+    //              "Handover hysteresis in dB (default: 3.0)",
+    //              handoverHysteresis);
+    cmd.AddValue("timeToTrigger", "Time to trigger in ms (default: 256)", timeToTrigger);
+    cmd.AddValue("minDistance", "Min UE distance from gNB in meters (default: 10.0)", minDistance);
+    cmd.AddValue("maxDistance", "Max UE distance from gNB in meters (default: 50.0)", maxDistance);
 
     // Parse the command line
     cmd.Parse(argc, argv);
@@ -199,22 +241,52 @@ main(int argc, char* argv[])
      * GridScenarioHelper documentation to see how the nodes will be distributed.
      */
     int64_t randomStream = 1;
-    GridScenarioHelper gridScenario;
-    gridScenario.SetRows(1);
-    gridScenario.SetColumns(gNbNum);
-    // All units below are in meters
-    gridScenario.SetHorizontalBsDistance(10.0);
-    gridScenario.SetVerticalBsDistance(10.0);
-    gridScenario.SetBsHeight(10);
-    gridScenario.SetUtHeight(1.5);
-    // must be set before BS number
-    gridScenario.SetSectorization(GridScenarioHelper::SINGLE);
+    // GridScenarioHelper gridScenario;
+    // gridScenario.SetRows(1);
+    // gridScenario.SetColumns(gNbNum);
+    // // All units below are in meters
+    // gridScenario.SetHorizontalBsDistance(500.0);
+    // gridScenario.SetVerticalBsDistance(500.0);
+    // gridScenario.SetBsHeight(10);
+    // gridScenario.SetUtHeight(1.5);
+    // // must be set before BS number
+    // gridScenario.SetSectorization(GridScenarioHelper::SINGLE);
+    // gridScenario.SetBsNumber(gNbNum);
+    // gridScenario.SetUtNumber(ueNumPergNb * gNbNum);
+    // gridScenario.SetScenarioHeight(3); // Create a 3x3 scenario where the UE will
+    // gridScenario.SetScenarioLength(3); // be distributed.
+    // randomStream += gridScenario.AssignStreams(randomStream);
+    // gridScenario.CreateScenario();
+
+
+    HexagonalGridScenarioHelper gridScenario;
+
+    // Create Hex Deployment
+    Parameters params;
+    params.confType = "calibrationConf";
+    params.nrConfigurationScenario = "RuralA";
+    params.radioNetwork = "NR";
+    ChooseCalibrationScenario(params);
+    Nr3gppCalibration(params);
+
+    
+
+    scenarioParams.SetScenarioParameters(scenarioParams);
+    ChooseCalibrationScenario(scenarioParams);
+    scenarioParams.m_isd = 1732;
+    scenarioParams.m_bsHeight
+    scenarioParams.SetSectorization(HexagonalGridScenarioHelper::TRIPLE);
+    gridScenario.SetScenarioParameters(scenarioParams);
     gridScenario.SetBsNumber(gNbNum);
     gridScenario.SetUtNumber(ueNumPergNb * gNbNum);
-    gridScenario.SetScenarioHeight(3); // Create a 3x3 scenario where the UE will
-    gridScenario.SetScenarioLength(3); // be distributed.
-    randomStream += gridScenario.AssignStreams(randomStream);
-    gridScenario.CreateScenario();
+
+
+    gridScenario.SetNumRings(1);
+    gridScenario.SetResultsDir("");
+    gridScenario.CreateScenarioWithMobility(Vector(10,0,0),0);
+
+
+
 
     /*
      * Create two different NodeContainer for the different traffic type.
@@ -222,19 +294,12 @@ main(int argc, char* argv[])
      * while in ueVoice we will put the UEs that will receive the voice traffic.
      */
     NodeContainer ueLowLatContainer;
-    NodeContainer ueVoiceContainer;
+    // NodeContainer ueVoiceContainer;
 
     for (uint32_t j = 0; j < gridScenario.GetUserTerminals().GetN(); ++j)
     {
         Ptr<Node> ue = gridScenario.GetUserTerminals().Get(j);
-        if (j % 2 == 0)
-        {
-            ueLowLatContainer.Add(ue);
-        }
-        else
-        {
-            ueVoiceContainer.Add(ue);
-        }
+        ueLowLatContainer.Add(ue);
     }
 
     /*
@@ -242,6 +307,49 @@ main(int argc, char* argv[])
      */
     NS_LOG_INFO("Creating " << gridScenario.GetUserTerminals().GetN() << " user terminals and "
                             << gridScenario.GetBaseStations().GetN() << " gNBs");
+
+    // Setup mobility for UEs if enabled
+    if (enableMobility)
+    {
+        NS_LOG_UNCOND("Mobility enabled - UEs will move at " << ueSpeed << " m/s in X direction");
+
+        // Set UE mobility - moving in x direction for handover
+        for (uint32_t i = 0; i < gridScenario.GetUserTerminals().GetN(); ++i)
+        {
+            Ptr<Node> ueNode = gridScenario.GetUserTerminals().Get(i);
+            Ptr<MobilityModel> oldMobility = ueNode->GetObject<MobilityModel>();
+            Vector currentPos = oldMobility->GetPosition();
+
+            // ueNode->UnAggregateObject(oldMobility);
+
+            // Convert to ConstantVelocityMobilityModel for movement
+            Ptr<ConstantVelocityMobilityModel> velMobility =
+                CreateObject<ConstantVelocityMobilityModel>();
+
+            Vector startPos;
+            startPos.x = minDistance + (i * 5.0);
+            startPos.y = currentPos.y;
+            startPos.z = 1.5;
+
+            velMobility->SetPosition(startPos);
+            velMobility->SetVelocity(Vector(ueSpeed, 0.0, 0.0));
+            // Vector currentPos = mobility->GetPosition();
+
+            // currentPos.x = minDistance;
+
+            // velMobility->SetPosition(currentPos);
+            // velMobility->SetVelocity(Vector(ueSpeed, 0.0, 0.0)); // Move in x direction
+            ueNode->AggregateObject(velMobility);
+
+            NS_LOG_UNCOND("UE " << i << " initial position: x=" << startPos.x 
+                << " y=" << startPos.y << " z=" << startPos.z
+                << " velocity=" << ueSpeed << " m/s");
+        }
+    }
+    else
+    {
+        NS_LOG_UNCOND("Mobility disabled - UEs will remain stationary");
+    }
 
     /*
      * Setup the NR module. We create the various helpers needed for the
@@ -259,6 +367,22 @@ main(int argc, char* argv[])
     // Put the pointers inside nrHelper
     nrHelper->SetBeamformingHelper(idealBeamformingHelper);
     nrHelper->SetEpcHelper(nrEpcHelper);
+
+    // Configure handover algorithm if enabled
+    if (handoverEnabled)
+    {
+        // Set handover algorithm parameters using configurable values
+        // Config::SetDefault("ns3::A3RsrpHandoverAlgorithm::Hysteresis",
+        //                    DoubleValue(handoverHysteresis));
+        // Config::SetDefault("ns3::A3RsrpHandoverAlgorithm::TimeToTrigger",
+        //                    TimeValue(MilliSeconds(timeToTrigger)));
+
+        // nrHelper->SetHandoverAlgorithmType("ns3::A3RsrpHandoverAlgorithm");
+
+        NS_LOG_UNCOND("A3 RSRP Handover Algorithm configured:");
+        // NS_LOG_UNCOND("  - Hysteresis: " << handoverHysteresis << " dB");
+        NS_LOG_UNCOND("  - Time to Trigger: " << timeToTrigger << " ms");
+    }
 
     /*
      * Spectrum division. We create two operational bands, each of them containing
@@ -407,11 +531,11 @@ main(int argc, char* argv[])
     NetDeviceContainer gnbNetDev =
         nrHelper->InstallGnbDevice(gridScenario.GetBaseStations(), allBwps);
     NetDeviceContainer ueLowLatNetDev = nrHelper->InstallUeDevice(ueLowLatContainer, allBwps);
-    NetDeviceContainer ueVoiceNetDev = nrHelper->InstallUeDevice(ueVoiceContainer, allBwps);
+    // NetDeviceContainer ueVoiceNetDev = nrHelper->InstallUeDevice(ueVoiceContainer, allBwps);
 
     randomStream += nrHelper->AssignStreams(gnbNetDev, randomStream);
     randomStream += nrHelper->AssignStreams(ueLowLatNetDev, randomStream);
-    randomStream += nrHelper->AssignStreams(ueVoiceNetDev, randomStream);
+    // randomStream += nrHelper->AssignStreams(ueVoiceNetDev, randomStream);
     /*
      * Case (iii): Go node for node and change the attributes we have to setup
      * per-node.
@@ -446,29 +570,32 @@ main(int argc, char* argv[])
 
     Ipv4InterfaceContainer ueLowLatIpIface =
         nrEpcHelper->AssignUeIpv4Address(NetDeviceContainer(ueLowLatNetDev));
-    Ipv4InterfaceContainer ueVoiceIpIface =
-        nrEpcHelper->AssignUeIpv4Address(NetDeviceContainer(ueVoiceNetDev));
+    // Ipv4InterfaceContainer ueVoiceIpIface =
+    //     nrEpcHelper->AssignUeIpv4Address(NetDeviceContainer(ueVoiceNetDev));
 
     // attach UEs to the closest gNB
     nrHelper->AttachToClosestGnb(ueLowLatNetDev, gnbNetDev);
-    nrHelper->AttachToClosestGnb(ueVoiceNetDev, gnbNetDev);
+    // nrHelper->AttachToClosestGnb(ueVoiceNetDev, gnbNetDev);
+
+    // Schedule periodic UE position printing
+    Simulator::Schedule(Seconds(0.1), &PrintUePosition, ueLowLatContainer);
 
     /*
      * Traffic part. Install two kind of traffic: low-latency and voice, each
      * identified by a particular source port.
      */
     uint16_t dlPortLowLat = 1234;
-    uint16_t dlPortVoice = 1235;
+    // uint16_t dlPortVoice = 1235;
 
     ApplicationContainer serverApps;
 
     // The sink will always listen to the specified ports
     UdpServerHelper dlPacketSinkLowLat(dlPortLowLat);
-    UdpServerHelper dlPacketSinkVoice(dlPortVoice);
+    // UdpServerHelper dlPacketSinkVoice(dlPortVoice);
 
     // The server, that is the application which is listening, is installed in the UE
     serverApps.Add(dlPacketSinkLowLat.Install(ueLowLatContainer));
-    serverApps.Add(dlPacketSinkVoice.Install(ueVoiceContainer));
+    // serverApps.Add(dlPacketSinkVoice.Install(ueVoiceContainer));
 
     /*
      * Configure attributes for the different generators, using user-provided
@@ -491,21 +618,21 @@ main(int argc, char* argv[])
     dlpfLowLat.localPortEnd = dlPortLowLat;
     lowLatTft->Add(dlpfLowLat);
 
-    // Voice configuration and object creation:
-    UdpClientHelper dlClientVoice;
-    dlClientVoice.SetAttribute("MaxPackets", UintegerValue(0xFFFFFFFF));
-    dlClientVoice.SetAttribute("PacketSize", UintegerValue(udpPacketSizeBe));
-    dlClientVoice.SetAttribute("Interval", TimeValue(Seconds(1.0 / lambdaBe)));
+    // // Voice configuration and object creation:
+    // UdpClientHelper dlClientVoice;
+    // dlClientVoice.SetAttribute("MaxPackets", UintegerValue(0xFFFFFFFF));
+    // dlClientVoice.SetAttribute("PacketSize", UintegerValue(udpPacketSizeBe));
+    // dlClientVoice.SetAttribute("Interval", TimeValue(Seconds(1.0 / lambdaBe)));
 
-    // The bearer that will carry voice traffic
-    NrEpsBearer voiceBearer(NrEpsBearer::GBR_CONV_VOICE);
+    // // The bearer that will carry voice traffic
+    // NrEpsBearer voiceBearer(NrEpsBearer::GBR_CONV_VOICE);
 
-    // The filter for the voice traffic
-    Ptr<NrEpcTft> voiceTft = Create<NrEpcTft>();
-    NrEpcTft::PacketFilter dlpfVoice;
-    dlpfVoice.localPortStart = dlPortVoice;
-    dlpfVoice.localPortEnd = dlPortVoice;
-    voiceTft->Add(dlpfVoice);
+    // // The filter for the voice traffic
+    // Ptr<NrEpcTft> voiceTft = Create<NrEpcTft>();
+    // NrEpcTft::PacketFilter dlpfVoice;
+    // dlpfVoice.localPortStart = dlPortVoice;
+    // dlpfVoice.localPortEnd = dlPortVoice;
+    // voiceTft->Add(dlpfVoice);
 
     /*
      * Let's install the applications!
@@ -529,22 +656,22 @@ main(int argc, char* argv[])
         nrHelper->ActivateDedicatedEpsBearer(ueDevice, lowLatBearer, lowLatTft);
     }
 
-    for (uint32_t i = 0; i < ueVoiceContainer.GetN(); ++i)
-    {
-        Ptr<Node> ue = ueVoiceContainer.Get(i);
-        Ptr<NetDevice> ueDevice = ueVoiceNetDev.Get(i);
-        Address ueAddress = ueVoiceIpIface.GetAddress(i);
+    // for (uint32_t i = 0; i < ueVoiceContainer.GetN(); ++i)
+    // {
+    //     Ptr<Node> ue = ueVoiceContainer.Get(i);
+    //     Ptr<NetDevice> ueDevice = ueVoiceNetDev.Get(i);
+    //     Address ueAddress = ueVoiceIpIface.GetAddress(i);
 
-        // The client, who is transmitting, is installed in the remote host,
-        // with destination address set to the address of the UE
-        dlClientVoice.SetAttribute(
-            "Remote",
-            AddressValue(addressUtils::ConvertToSocketAddress(ueAddress, dlPortVoice)));
-        clientApps.Add(dlClientVoice.Install(remoteHost));
+    //     // The client, who is transmitting, is installed in the remote host,
+    //     // with destination address set to the address of the UE
+    //     dlClientVoice.SetAttribute(
+    //         "Remote",
+    //         AddressValue(addressUtils::ConvertToSocketAddress(ueAddress, dlPortVoice)));
+    //     clientApps.Add(dlClientVoice.Install(remoteHost));
 
-        // Activate a dedicated bearer for the traffic type
-        nrHelper->ActivateDedicatedEpsBearer(ueDevice, voiceBearer, voiceTft);
-    }
+    //     // Activate a dedicated bearer for the traffic type
+    //     nrHelper->ActivateDedicatedEpsBearer(ueDevice, voiceBearer, voiceTft);
+    // }
 
     // start UDP server and client apps
     serverApps.Start(udpAppStartTime);
