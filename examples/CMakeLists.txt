@@ -11,7 +11,7 @@ set(base_examples
     cttc-3gpp-channel-nums-fdm
     cttc-nr-cc-bwp-demo
     cttc-lte-ca-demo
-    cttc-nr-demo
+    # cttc-nr-demo
     cttc-error-model
     cttc-error-model-amc
     cttc-error-model-comparison
@@ -127,6 +127,18 @@ else()
     NAME cttc-nr-3gpp-calibration-user
     SOURCE_FILES 3gpp-outdoor-calibration/cttc-nr-3gpp-calibration-user.cc
                  ${3gpp-outdoor-calibration_source_files}
+    LIBRARIES_TO_LINK
+      ${libnr}
+      ${libflow-monitor}
+      ${libstats}
+      ${liblte}
+  )
+
+  build_lib_example(
+    NAME cttc-nr-demo
+    SOURCE_FILES
+      cttc-nr-demo.cc
+      ${3gpp-outdoor-calibration_source_files}
     LIBRARIES_TO_LINK
       ${libnr}
       ${libflow-monitor}

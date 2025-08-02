@@ -68,6 +68,8 @@ class ScenarioParameters
      */
     void SetScenarioParameters(const ScenarioParameters& scenario);
 
+    void PrintScenarioParameters();
+
     /**
      * @brief Sets the Urban Macro (UMa) scenario parameters
      */

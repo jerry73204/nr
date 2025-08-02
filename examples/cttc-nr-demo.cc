@@ -94,6 +94,7 @@ PrintUePosition(NodeContainer ueNodes)
 int
 main(int argc, char* argv[])
 {
+    std::cout << "here" << std::endl;
     /*
      * Variables that represent the parameters we will accept as input by the
      * command line. Each of them is initialized with a default value, and
@@ -139,10 +140,9 @@ main(int argc, char* argv[])
     double maxDistance = 50.0;       // Default: start within 50m
 
     // Where we will store the output files.
-    std::string simTag = "default";
+    std::string simTag = "my_demo";
     std::string outputDir = "./";
 
-    Parameters params;
 
     /*
      * From here, we instruct the ns3::CommandLine class of all the input parameters
@@ -269,20 +269,20 @@ main(int argc, char* argv[])
     ChooseCalibrationScenario(params);
     Nr3gppCalibration(params);
 
-    
+    ScenarioParameters scenarioParams;
+    scenarioParams.m_isd = params.isd;
+    scenarioParams.m_bsHeight = params.bsHeight;
+    scenarioParams.m_utHeight = params.utHeight;
+    scenarioParams.m_minBsUtDistance = params.minBsUtDistance;
+    scenarioParams.m_antennaOffset = params.antennaOffset;
 
-    scenarioParams.SetScenarioParameters(scenarioParams);
-    ChooseCalibrationScenario(scenarioParams);
-    scenarioParams.m_isd = 1732;
-    scenarioParams.m_bsHeight
-    scenarioParams.SetSectorization(HexagonalGridScenarioHelper::TRIPLE);
-    gridScenario.SetScenarioParameters(scenarioParams);
+    gridScenario.SetSimTag(simTag);
     gridScenario.SetBsNumber(gNbNum);
-    gridScenario.SetUtNumber(ueNumPergNb * gNbNum);
+    gridScenario.SetUtNumber(ueNumPergNb);
+    gridScenario.SetResultsDir(outputDir);
+    gridScenario.SetNumRings(params.numOuterRings);
+    gridScenario.SetMaxUeDistanceToClosestSite(params.maxUeClosestSiteDistance);
 
-
-    gridScenario.SetNumRings(1);
-    gridScenario.SetResultsDir("");
     gridScenario.CreateScenarioWithMobility(Vector(10,0,0),0);
 
 

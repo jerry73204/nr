@@ -76,6 +76,17 @@ ScenarioParameters::SetScenarioParameters(const ScenarioParameters& scenario)
 }
 
 void
+ScenarioParameters::PrintScenarioParameters()
+{
+    std::cout << "ISD: " << m_isd << std::endl;
+    std::cout << "Base Station Height: " << m_bsHeight << std::endl;
+    std::cout << "User Terminal Height: " << m_utHeight << std::endl;
+    std::cout << "Sectorization: " << m_sectorization << std::endl;
+    std::cout << "Minimum BS-UT Distance: " << m_minBsUtDistance << std::endl;
+    std::cout << "Antenna Offset: " << m_antennaOffset << std::endl;
+}
+
+void
 ScenarioParameters::SetUMaParameters()
 {
     m_isd = 1732;
