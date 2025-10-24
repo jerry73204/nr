@@ -255,7 +255,9 @@ main(int argc, char* argv[])
 
     // in case calibrationConf is chosen, it sets the parameters of one
     // of the NR pre-defined scenarios
-
+    params.nrConfigurationScenario = "RuralB";
+    params.radioNetwork = "NR";
+    params.trafficScenario=1;
     if (params.confType == "calibrationConf")
     {
         ChooseCalibrationScenario(params);

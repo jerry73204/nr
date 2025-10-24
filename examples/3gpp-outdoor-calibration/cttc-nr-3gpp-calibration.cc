@@ -536,6 +536,7 @@ Nr3gppCalibration(Parameters& params)
     gridScenario.SetNumRings(params.numOuterRings);
     gnbSites = gridScenario.GetNumSites();
     uint32_t ueNum = params.ueNumPergNb * gnbSites * sectors;
+    // uint32_t ueNum = params.ueNum;
     gridScenario.SetUtNumber(ueNum);
     sector0AngleRad = gridScenario.GetAntennaOrientationRadians(0);
     std::cout << sector0AngleRad << std::endl;

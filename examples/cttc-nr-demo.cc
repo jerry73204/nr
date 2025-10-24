@@ -94,7 +94,8 @@ PrintUePosition(NodeContainer ueNodes)
 int
 main(int argc, char* argv[])
 {
-    std::cout << "here" << std::endl;
+    // Packet::EnableChecking();
+    // Packet::EnablePrinting();
     /*
      * Variables that represent the parameters we will accept as input by the
      * command line. Each of them is initialized with a default value, and
@@ -267,7 +268,15 @@ main(int argc, char* argv[])
     params.nrConfigurationScenario = "RuralA";
     params.radioNetwork = "NR";
     ChooseCalibrationScenario(params);
-    Nr3gppCalibration(params);
+
+    // params.ueNumPergNb = 1;
+    params.ueNum = 1;
+    params.numOuterRings = 1;
+    params.checkUeMobility = true;
+    params.simTag=simTag;
+    params.outputDir=outputDir;
+    params.simTag = simTag;
+
 
     ScenarioParameters scenarioParams;
     scenarioParams.m_isd = params.isd;
@@ -276,14 +285,8 @@ main(int argc, char* argv[])
     scenarioParams.m_minBsUtDistance = params.minBsUtDistance;
     scenarioParams.m_antennaOffset = params.antennaOffset;
 
-    gridScenario.SetSimTag(simTag);
-    gridScenario.SetBsNumber(gNbNum);
-    gridScenario.SetUtNumber(ueNumPergNb);
-    gridScenario.SetResultsDir(outputDir);
-    gridScenario.SetNumRings(params.numOuterRings);
-    gridScenario.SetMaxUeDistanceToClosestSite(params.maxUeClosestSiteDistance);
-
-    gridScenario.CreateScenarioWithMobility(Vector(10,0,0),0);
+    Nr3gppCalibration(params);
+    // gridScenario.CreateScenarioWithMobility(Vector(10,0,0),0);
 
 
 
@@ -308,49 +311,6 @@ main(int argc, char* argv[])
     NS_LOG_INFO("Creating " << gridScenario.GetUserTerminals().GetN() << " user terminals and "
                             << gridScenario.GetBaseStations().GetN() << " gNBs");
 
-    // Setup mobility for UEs if enabled
-    if (enableMobility)
-    {
-        NS_LOG_UNCOND("Mobility enabled - UEs will move at " << ueSpeed << " m/s in X direction");
-
-        // Set UE mobility - moving in x direction for handover
-        for (uint32_t i = 0; i < gridScenario.GetUserTerminals().GetN(); ++i)
-        {
-            Ptr<Node> ueNode = gridScenario.GetUserTerminals().Get(i);
-            Ptr<MobilityModel> oldMobility = ueNode->GetObject<MobilityModel>();
-            Vector currentPos = oldMobility->GetPosition();
-
-            // ueNode->UnAggregateObject(oldMobility);
-
-            // Convert to ConstantVelocityMobilityModel for movement
-            Ptr<ConstantVelocityMobilityModel> velMobility =
-                CreateObject<ConstantVelocityMobilityModel>();
-
-            Vector startPos;
-            startPos.x = minDistance + (i * 5.0);
-            startPos.y = currentPos.y;
-            startPos.z = 1.5;
-
-            velMobility->SetPosition(startPos);
-            velMobility->SetVelocity(Vector(ueSpeed, 0.0, 0.0));
-            // Vector currentPos = mobility->GetPosition();
-
-            // currentPos.x = minDistance;
-
-            // velMobility->SetPosition(currentPos);
-            // velMobility->SetVelocity(Vector(ueSpeed, 0.0, 0.0)); // Move in x direction
-            ueNode->AggregateObject(velMobility);
-
-            NS_LOG_UNCOND("UE " << i << " initial position: x=" << startPos.x 
-                << " y=" << startPos.y << " z=" << startPos.z
-                << " velocity=" << ueSpeed << " m/s");
-        }
-    }
-    else
-    {
-        NS_LOG_UNCOND("Mobility disabled - UEs will remain stationary");
-    }
-
     /*
      * Setup the NR module. We create the various helpers needed for the
      * NR simulation:
@@ -367,22 +327,6 @@ main(int argc, char* argv[])
     // Put the pointers inside nrHelper
     nrHelper->SetBeamformingHelper(idealBeamformingHelper);
     nrHelper->SetEpcHelper(nrEpcHelper);
-
-    // Configure handover algorithm if enabled
-    if (handoverEnabled)
-    {
-        // Set handover algorithm parameters using configurable values
-        // Config::SetDefault("ns3::A3RsrpHandoverAlgorithm::Hysteresis",
-        //                    DoubleValue(handoverHysteresis));
-        // Config::SetDefault("ns3::A3RsrpHandoverAlgorithm::TimeToTrigger",
-        //                    TimeValue(MilliSeconds(timeToTrigger)));
-
-        // nrHelper->SetHandoverAlgorithmType("ns3::A3RsrpHandoverAlgorithm");
-
-        NS_LOG_UNCOND("A3 RSRP Handover Algorithm configured:");
-        // NS_LOG_UNCOND("  - Hysteresis: " << handoverHysteresis << " dB");
-        NS_LOG_UNCOND("  - Time to Trigger: " << timeToTrigger << " ms");
-    }
 
     /*
      * Spectrum division. We create two operational bands, each of them containing
@@ -469,8 +413,7 @@ main(int argc, char* argv[])
      *
      */
 
-    Packet::EnableChecking();
-    Packet::EnablePrinting();
+
 
     /*
      *  Case (i): Attributes valid for all the nodes
@@ -543,6 +486,8 @@ main(int argc, char* argv[])
 
     // Get the first netdevice (gnbNetDev.Get (0)) and the first bandwidth part (0)
     // and set the attribute.
+    NS_LOG_UNCOND(gnbNetDev.GetN());
+    return 1;
     nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)
         ->SetAttribute("Numerology", UintegerValue(numerologyBwp1));
     nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)
