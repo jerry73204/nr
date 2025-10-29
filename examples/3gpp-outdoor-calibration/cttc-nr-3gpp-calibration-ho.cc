@@ -47,11 +47,11 @@ namespace ns3
 {
 
 void
-RecvMeasurementReportCallback(const std::string& path,
+RecvMeasurementReportCallback(std::string path,
                               uint64_t imsi,
                               uint16_t cellId,
                               uint16_t rnti,
-                              NrRrcSap::MeasurementReport meas)
+                              const NrRrcSap::MeasurementReport meas)
 {
     NS_LOG_UNCOND(Simulator::Now().GetSeconds()
                   << "s - MEAS REPORT: IMSI " << imsi << " RNTI " << rnti
@@ -73,19 +73,19 @@ RecvMeasurementReportCallback(const std::string& path,
 }
 
 void
-HandoverStartCallback(const std::string& path, uint64_t imsi, uint16_t sourcePci, uint16_t targetPci)
+HandoverStartCallback(std::string path, uint64_t imsi, uint16_t sourcePci, uint16_t rnti, uint16_t targetPci)
 {
     NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                  << "s - HANDOVER START: IMSI " << imsi << " | Source PCI " << sourcePci
+                  << "s - HANDOVER START: IMSI " << imsi << " RNTI " << rnti << " | Source PCI " << sourcePci
                   << " -> Target PCI " << targetPci);
 }
 
 void
-HandoverEndOkCallback(const std::string& path, uint64_t imsi, uint16_t sourcePci, uint16_t targetPci)
+HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t rnti)
 {
     NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                  << "s - HANDOVER SUCCESS: IMSI " << imsi << " | Source PCI " << sourcePci
-                  << " -> Target PCI " << targetPci);
+                  << "s - HANDOVER SUCCESS: IMSI " << imsi << " RNTI " << rnti
+                  << " | New CellId " << cellId);
 }
 
 const Time appStartWindow = MilliSeconds(50);
@@ -577,7 +577,8 @@ Nr3gppCalibration(Parameters& params)
     gridScenario.SetResultsDir(params.outputDir);
     gridScenario.SetNumRings(params.numOuterRings);
     gnbSites = gridScenario.GetNumSites();
-    uint32_t ueNum = params.ueNumPergNb * gnbSites * sectors;
+    // uint32_t ueNum = params.ueNumPergNb * gnbSites * sectors;
+    uint32_t ueNum = params.ueNum;
     gridScenario.SetUtNumber(ueNum);
     sector0AngleRad = gridScenario.GetAntennaOrientationRadians(0);
     std::cout << sector0AngleRad << std::endl;
@@ -885,14 +886,6 @@ Nr3gppCalibration(Parameters& params)
     // HANDOVER AND MEASUREMENT REPORT CONFIGURATION
     if (nrHelper != nullptr)
     {
-        // Ptr<A2A4RsrqHandoverAlgorithm> handoverAlgo = CreateObject<A2A4RsrqHandoverAlgorithm>();
-        // std::string handoverAlgo = "A2A4RsrqHandoverAlgorithm";
-        // handoverAlgo->SetAttribute("ServingCellThreshold",
-        //                            IntegerValue(31)); // RSRQ range is 0-34. 31 corresponds to -4.5 dB
-        // handoverAlgo->SetAttribute("NeighbourCellOffset",
-        //                            IntegerValue(2)); // 1dB
-        // nrHelper->SetHandoverAlgorithmType(handoverAlgo);
-
         // Configure measurement reporting
         // Event A2 (Serving cell becomes worse than threshold)
         NrRrcSap::ReportConfigEutra reportConfigA2;
@@ -900,7 +893,7 @@ Nr3gppCalibration(Parameters& params)
         reportConfigA2.triggerType = NrRrcSap::ReportConfigEutra::EVENT;
         reportConfigA2.eventId = NrRrcSap::ReportConfigEutra::EVENT_A2;
         reportConfigA2.threshold1.choice = NrRrcSap::ThresholdEutra::THRESHOLD_RSRQ;
-        reportConfigA2.threshold1.range = 31; // RSRQ range is 0-34. 31 corresponds to -4.5dB.
+        reportConfigA2.threshold1.range = 33; // RSRQ range is 0-34. 33 corresponds to -3.5dB.
         reportConfigA2.triggerQuantity = NrRrcSap::ReportConfigEutra::RSRQ;
         reportConfigA2.reportQuantity = NrRrcSap::ReportConfigEutra::BOTH;
         reportConfigA2.reportInterval = NrRrcSap::ReportConfigEutra::MS480;

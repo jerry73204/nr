@@ -3,8 +3,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "cttc-nr-3gpp-calibration-ho.h"
+#include "ns3/nr-a2-a4-rsrq-handover-algorithm.h"
 
 #include "ns3/command-line.h"
+#include "ns3/core-module.h"
 #include "ns3/show-progress.h"
 
 using namespace ns3;
@@ -39,6 +41,10 @@ $ ./ns3 run "cttc-nr-3gpp-calibration-user --PrintHelp"
 int
 main(int argc, char* argv[])
 {
+    Config::SetDefault("ns3::NrHelper::HandoverAlgorithm",
+                       StringValue("ns3::NrA2A4RsrqHandoverAlgorithm"));
+    Config::SetDefault("ns3::NrA2A4RsrqHandoverAlgorithm::ServingCellThreshold", UintegerValue(30));
+    Config::SetDefault("ns3::NrA2A4RsrqHandoverAlgorithm::NeighbourCellOffset", UintegerValue(1));
     Parameters params;
     /*
      * From here, we instruct the ns3::CommandLine class of all the input parameters

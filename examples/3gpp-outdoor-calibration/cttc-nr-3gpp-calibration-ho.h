@@ -23,6 +23,7 @@ struct Parameters
     std::string nrConfigurationScenario = "DenseA"; // DenseA, DenseB, RuralA, RuralB
     uint16_t numOuterRings = 3;
     uint16_t ueNumPergNb = 10;
+    uint16_t ueNum = 1;
     double uesWithRandomUtHeight = 0;
     bool logging = false;
     bool basicTraces = false;
