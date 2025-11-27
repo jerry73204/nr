@@ -30,6 +30,7 @@
 #include "ns3/nr-gnb-mac.h"
 #include "ns3/nr-gnb-net-device.h"
 #include "ns3/nr-gnb-phy.h"
+#include "ns3/nr-handover-algorithm.h"
 #include "ns3/nr-initial-association.h"
 #include "ns3/nr-mac-scheduler-tdma-rr.h"
 #include "ns3/nr-pm-search-full.h"
@@ -804,6 +805,12 @@ NrHelper::InstallSingleGnbDevice(
     DynamicCast<BwpManagerGnb>(ccmGnbManager)
         ->SetBwpManagerAlgorithm(m_gnbBwpManagerAlgoFactory.Create<BwpManagerAlgorithm>());
 
+    // Create and connect the handover algorithm
+    Ptr<NrHandoverAlgorithm> handoverAlgorithm =
+        m_handoverAlgorithmFactory.Create<NrHandoverAlgorithm>();
+    rrc->SetNrHandoverManagementSapProvider(handoverAlgorithm->GetNrHandoverManagementSapProvider());
+    handoverAlgorithm->SetNrHandoverManagementSapUser(rrc->GetNrHandoverManagementSapUser());
+
     // Convert Gnb carrier map to only PhyConf map
     // we want to make RRC to be generic, to be able to work with any type of carriers, not only
     // strictly LTE carriers
@@ -822,6 +829,10 @@ NrHelper::InstallSingleGnbDevice(
 
     ccmGnbManager->SetNumberOfComponentCarriers(ccMap.size());
     rrc->ConfigureCarriers(ccPhyConfMap);
+
+    // Initialize the handover algorithm AFTER carriers are configured
+    // (so m_numberOfComponentCarriers is set correctly in RRC)
+    handoverAlgorithm->Initialize();
 
     // nr module currently uses only RRC ideal mode
     if (m_useIdealRrc)
@@ -913,6 +924,9 @@ NrHelper::InstallSingleGnbDevice(
     dev->SetAttribute("NrGnbComponentCarrierManager", PointerValue(ccmGnbManager));
     dev->SetCcMap(ccMap);
     dev->SetAttribute("NrGnbRrc", PointerValue(rrc));
+
+    // Aggregate the handover algorithm to the RRC to keep it alive
+    rrc->AggregateObject(handoverAlgorithm);
 
     n->AddDevice(dev);
 
