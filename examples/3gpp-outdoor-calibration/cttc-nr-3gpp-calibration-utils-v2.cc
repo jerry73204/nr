@@ -815,6 +815,11 @@ LenaV2Utils::SetLenaV2SimulatorParameters(const double sector0AngleRad,
     // Ue routing between Bearer and bandwidth part
     nrHelper->SetUeBwpManagerAlgorithmAttribute("NGBR_LOW_LAT_EMBB", UintegerValue(bwpIdForLowLat));
 
+    // Configure A3-RSRP handover algorithm for automatic handover based on measurements
+    nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
+    nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(3.0));
+    nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(256)));
+
     //  NetDeviceContainer gnbNetDev = nrHelper->InstallGnbDevice (gridScenario.GetBaseStations (),
     //  allBwps);
     gnbSector1NetDev = nrHelper->InstallGnbDevice(gnbSector1Container, sector1Bwps);
@@ -837,6 +842,13 @@ LenaV2Utils::SetLenaV2SimulatorParameters(const double sector0AngleRad,
     randomStream += nrHelper->AssignStreams(ueSector1NetDev, randomStream);
     randomStream += nrHelper->AssignStreams(ueSector2NetDev, randomStream);
     randomStream += nrHelper->AssignStreams(ueSector3NetDev, randomStream);
+
+    // Add X2 interfaces between all gNBs to enable handover
+    NodeContainer allGnbNodes;
+    allGnbNodes.Add(gnbSector1Container);
+    allGnbNodes.Add(gnbSector2Container);
+    allGnbNodes.Add(gnbSector3Container);
+    nrHelper->AddX2Interface(allGnbNodes);
 
     // Sectors (cells) of a site are pointing at different directions
     std::vector<double> sectorOrientationRad{
