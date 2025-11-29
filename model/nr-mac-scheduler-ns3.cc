@@ -913,8 +913,14 @@ NrMacSchedulerNs3::DoSchedDlCqiInfoReq(
 
     for (const auto& cqi : params.m_cqiList)
     {
-        NS_ASSERT(m_ueMap.find(cqi.m_rnti) != m_ueMap.end());
-        const std::shared_ptr<NrMacSchedulerUeInfo>& ue = m_ueMap.find(cqi.m_rnti)->second;
+        auto itUe = m_ueMap.find(cqi.m_rnti);
+        if (itUe == m_ueMap.end())
+        {
+            // UE was removed (e.g., during handover), skip this CQI report
+            NS_LOG_WARN("DL CQI received for unknown RNTI " << cqi.m_rnti << " (likely removed during handover)");
+            continue;
+        }
+        const std::shared_ptr<NrMacSchedulerUeInfo>& ue = itUe->second;
         m_cqiManagement.DlCqiReported(cqi, ue, expirationTime, m_maxDlMcs, GetBandwidthInRbg());
         m_csiFeedbackReceived(GetCellId(), GetBwpId(), ue);
     }
@@ -962,7 +968,12 @@ NrMacSchedulerNs3::DoSchedUlCqiInfoReq(
                                            << static_cast<uint32_t>(symStart));
 
         auto itAlloc = m_ulAllocationMap.find(ulSfnSf.GetEncoding());
-        NS_ASSERT_MSG(itAlloc != m_ulAllocationMap.end(), "Can't find allocation for " << ulSfnSf);
+        if (itAlloc == m_ulAllocationMap.end())
+        {
+            // Allocation was cleared (e.g., during handover), skip this CQI report
+            NS_LOG_WARN("UL CQI received for unknown allocation " << ulSfnSf << " (likely removed during handover)");
+            break;
+        }
         std::vector<AllocElem>& ulAllocations = itAlloc->second.m_ulAllocations;
 
         for (auto it = ulAllocations.cbegin(); it != ulAllocations.cend(); /* NO INC */)
@@ -971,7 +982,13 @@ NrMacSchedulerNs3::DoSchedUlCqiInfoReq(
             if (allocation.m_symStart == symStart)
             {
                 auto itUe = m_ueMap.find(allocation.m_rnti);
-                NS_ASSERT(itUe != m_ueMap.end());
+                if (itUe == m_ueMap.end())
+                {
+                    // UE was removed (e.g., during handover), skip this allocation
+                    NS_LOG_WARN("UL CQI for unknown RNTI " << allocation.m_rnti << " (likely removed during handover)");
+                    it = ulAllocations.erase(it);
+                    continue;
+                }
                 NS_ASSERT(allocation.m_numSym > 0);
                 NS_ASSERT(allocation.m_tbs > 0);
 
@@ -990,7 +1007,7 @@ NrMacSchedulerNs3::DoSchedUlCqiInfoReq(
                 ++it;
             }
         }
-        NS_ASSERT(found);
+        // Don't assert on found - UE may have been removed during handover
 
         if (ulAllocations.empty())
         {
