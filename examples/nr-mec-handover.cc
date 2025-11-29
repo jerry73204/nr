@@ -271,9 +271,9 @@ int
 main(int argc, char* argv[])
 {
     // Simulation parameters
-    uint16_t numGnbs = 3;                    // Number of gNBs (and edge servers)
+    uint16_t numGnbs = 2;                    // Number of gNBs (and edge servers)
     double gnbSpacing = 500.0;               // Distance between gNBs in meters
-    double simTime = 30.0;                   // Simulation time in seconds
+    double simTime = 60.0;                   // Simulation time in seconds
     double ueSpeed = 20.0;                   // UE speed in m/s (72 km/h)
     double ueStartX = 50.0;                  // UE starting X position (near first gNB for stable attachment)
     bool logging = true;                     // Enable detailed logging
@@ -289,6 +289,12 @@ main(int argc, char* argv[])
     uint32_t packetSize = 1024;              // UDP packet size
     double dataRate = 10.0;                  // Data rate in Mbps
 
+    // Tap bridge parameters
+    bool enableTap = false;                  // Enable tap bridge for external connectivity
+    std::string tapUeDevice = "tap_z_pre_sub";   // Tap device for UE
+    std::string tapEdge0Device = "tap_edge0";    // Tap device for edge server 0
+    std::string tapEdge1Device = "tap_edge1";    // Tap device for edge server 1
+
     CommandLine cmd(__FILE__);
     cmd.AddValue("numGnbs", "Number of gNBs", numGnbs);
     cmd.AddValue("gnbSpacing", "Distance between gNBs (m)", gnbSpacing);
@@ -299,7 +305,19 @@ main(int argc, char* argv[])
     cmd.AddValue("centralFrequency", "Central frequency (Hz)", centralFrequency);
     cmd.AddValue("bandwidth", "System bandwidth (Hz)", bandwidth);
     cmd.AddValue("gnbTxPower", "gNB TX power (dBm)", gnbTxPower);
+    cmd.AddValue("enableTap", "Enable tap bridge for external connectivity", enableTap);
+    cmd.AddValue("tapUeDevice", "Tap device name for UE", tapUeDevice);
+    cmd.AddValue("tapEdge0Device", "Tap device name for edge server 0", tapEdge0Device);
+    cmd.AddValue("tapEdge1Device", "Tap device name for edge server 1", tapEdge1Device);
     cmd.Parse(argc, argv);
+
+    // Configure real-time simulator and checksums when tap bridge is enabled
+    if (enableTap)
+    {
+        GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
+        GlobalValue::Bind("ChecksumEnabled", BooleanValue(true));
+        NS_LOG_UNCOND("Tap bridge enabled - using real-time simulator");
+    }
 
     if (logging)
     {
@@ -441,6 +459,23 @@ main(int argc, char* argv[])
     Ptr<Ipv4StaticRouting> ueStaticRouting =
         ipv4RoutingHelper.GetStaticRouting(ueNodes.Get(0)->GetObject<Ipv4>());
     ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
+
+    //--------------------------------------------------------------------------
+    // Set up tap bridge for external connectivity (if enabled)
+    //--------------------------------------------------------------------------
+    if (enableTap)
+    {
+        TapBridgeHelper tapBridge;
+        tapBridge.SetAttribute("Mode", StringValue("UseLocal"));
+
+        // Install tap bridge on UE
+        tapBridge.SetAttribute("DeviceName", StringValue(tapUeDevice));
+        tapBridge.Install(ueNodes.Get(0), ueNetDevs.Get(0));
+
+        NS_LOG_UNCOND("Tap bridge installed on UE (UseLocal mode)");
+        NS_LOG_UNCOND("  UE IP: " << ueIpAddr);
+        NS_LOG_UNCOND("  Tap device: " << tapUeDevice);
+    }
 
     //--------------------------------------------------------------------------
     // Set up edge servers and connect them to gNBs via PGW

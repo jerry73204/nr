@@ -40,6 +40,14 @@ foreach(
 endforeach()
 
 build_lib_example(
+  NAME nr-mec-handover
+  SOURCE_FILES nr-mec-handover.cc
+  LIBRARIES_TO_LINK ${libnr}
+                    ${libflow-monitor}
+                    ${libtap-bridge}
+)
+
+build_lib_example(
   NAME cttc-fh-compression
   SOURCE_FILES cttc-fh-compression.cc
   LIBRARIES_TO_LINK ${libnr}
