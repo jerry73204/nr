@@ -32,6 +32,7 @@
 #include "ns3/buildings-module.h"
 #include "ns3/config-store-module.h"
 #include "ns3/core-module.h"
+#include "ns3/csma-module.h"
 #include "ns3/flow-monitor-module.h"
 #include "ns3/internet-apps-module.h"
 #include "ns3/internet-module.h"
@@ -273,8 +274,9 @@ main(int argc, char* argv[])
     // Simulation parameters
     uint16_t numGnbs = 2;                    // Number of gNBs (and edge servers)
     double gnbSpacing = 500.0;               // Distance between gNBs in meters
-    double simTime = 60.0;                   // Simulation time in seconds
-    double ueSpeed = 20.0;                   // UE speed in m/s (72 km/h)
+    double simTime = 3000.0;                   // Simulation time in seconds
+    // double ueSpeed = 20.0;                   // UE speed in m/s (72 km/h)
+    double ueSpeed = 2;
     double ueStartX = 50.0;                  // UE starting X position (near first gNB for stable attachment)
     bool logging = true;                     // Enable detailed logging
     std::string handoverAlgo = "A3Rsrp";     // Handover algorithm: A3Rsrp or A2A4Rsrq
@@ -452,7 +454,7 @@ main(int argc, char* argv[])
     internet.Install(ueNodes);
 
     Ipv4InterfaceContainer ueIpIfaces = epcHelper->AssignUeIpv4Address(ueNetDevs);
-    Ipv4Address ueIpAddr = ueIpIfaces.GetAddress(0);
+    Ipv4Address ueIpAddr = ueIpIfaces.GetAddress(0);  //7.x.x.x
 
     // Set default route for UE
     Ipv4StaticRoutingHelper ipv4RoutingHelper;
@@ -465,43 +467,80 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     if (enableTap)
     {
+        // Set up Ghost node
+        NodeContainer tapLinkNodes;
+        tapLinkNodes.Add(ueNodes.Get(0));
+        Ptr<Node> ghostNode = CreateObject<Node>();
+        tapLinkNodes.Add(ghostNode);
+
+        // Ghost node doesn't need Internet stack - it's a pure L2 bridge
+
+        CsmaHelper tapCsma;
+        tapCsma.SetChannelAttribute("DataRate", StringValue("10Gbps"));
+        tapCsma.SetChannelAttribute("Delay", StringValue("0"));
+
+        NetDeviceContainer tapDevices = tapCsma.Install(tapLinkNodes);
+
+        // Only assign IP to UE's CSMA interface, not ghost node
+        // Ghost node acts as L2 bridge - external Linux host will have its own IP
+        Ipv4AddressHelper ipv4Tap;
+        ipv4Tap.SetBase("10.0.0.0", "255.255.255.0");
+        Ipv4InterfaceContainer tapIpIfaces = ipv4Tap.Assign(tapDevices.Get(0));  // UE only
+        Ipv4Address ueLanIp = tapIpIfaces.GetAddress(0);
+
+        Ptr<Ipv4> ipv4 = ueNodes.Get(0)->GetObject<Ipv4>();
+        ipv4->SetAttribute("IpForward", BooleanValue(true));
+
         TapBridgeHelper tapBridge;
-        tapBridge.SetAttribute("Mode", StringValue("UseLocal"));
+        tapBridge.SetAttribute("Mode", StringValue("UseBridge"));
 
         // Install tap bridge on UE
         tapBridge.SetAttribute("DeviceName", StringValue(tapUeDevice));
-        tapBridge.Install(ueNodes.Get(0), ueNetDevs.Get(0));
 
-        NS_LOG_UNCOND("Tap bridge installed on UE (UseLocal mode)");
-        NS_LOG_UNCOND("  UE IP: " << ueIpAddr);
+        tapBridge.Install(tapLinkNodes.Get(1), tapDevices.Get(1));
+
+        NS_LOG_UNCOND("Tap bridge installed on UE (UseBridge mode)");
+        NS_LOG_UNCOND("  UE WAN IP (5G): " << ueIpAddr);
+        NS_LOG_UNCOND("  UE LAN IP (Tap): " << ueLanIp);
         NS_LOG_UNCOND("  Tap device: " << tapUeDevice);
+        NS_LOG_UNCOND("  Please set Linux tap0 IP to 192.168.1.2/24 and Gateway to " << ueLanIp);
     }
 
     //--------------------------------------------------------------------------
     // Set up edge servers and connect them to gNBs via PGW
+    // Using CSMA for tap bridge compatibility (P2P uses PPP which can't handle Ethernet frames)
     //--------------------------------------------------------------------------
     Ptr<Node> pgw = epcHelper->GetPgwNode();
     internet.Install(edgeServerNodes);
 
-    PointToPointHelper p2p;
-    p2p.SetDeviceAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
-    p2p.SetDeviceAttribute("Mtu", UintegerValue(1500));
-    p2p.SetChannelAttribute("Delay", TimeValue(MilliSeconds(1)));
-
-    Ipv4AddressHelper ipv4Helper;
+    // Store edge server devices for tap bridge installation
+    std::vector<Ptr<NetDevice>> edgeServerDevices;
 
     for (uint16_t i = 0; i < numGnbs; ++i)
     {
-        // Connect edge server to PGW
-        NetDeviceContainer edgeDevices = p2p.Install(pgw, edgeServerNodes.Get(i));
+        // Create a CSMA network for each edge server connection to PGW
+        // This allows tap bridge to work properly (CSMA handles Ethernet frames)
+        CsmaHelper csma;
+        csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
+        csma.SetChannelAttribute("Delay", TimeValue(MilliSeconds(1)));
+
+        NodeContainer edgeLink;
+        edgeLink.Add(pgw);
+        edgeLink.Add(edgeServerNodes.Get(i));
+
+        NetDeviceContainer edgeDevices = csma.Install(edgeLink);
 
         // Assign IP addresses
         std::ostringstream subnet;
         subnet << "10." << (i + 1) << ".0.0";
+        Ipv4AddressHelper ipv4Helper;
         ipv4Helper.SetBase(subnet.str().c_str(), "255.255.255.0");
-        Ipv4InterfaceContainer edgeIpIfaces = ipv4Helper.Assign(edgeDevices);
 
+        Ipv4InterfaceContainer edgeIpIfaces = ipv4Helper.Assign(edgeDevices);
         Ipv4Address edgeServerIp = edgeIpIfaces.GetAddress(1);
+
+        // Store the edge server's CSMA device (index 1; index 0 is PGW side)
+        edgeServerDevices.push_back(edgeDevices.Get(1));
 
         // Get cell ID for this gNB
         Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(i)->GetObject<NrGnbNetDevice>();
@@ -515,9 +554,33 @@ main(int argc, char* argv[])
                     << i << " (CellId: " << cellId << ")");
 
         // Set up routing from edge server to UE network
+        // Ptr<Ipv4StaticRouting> edgeRouting =
+        //     ipv4RoutingHelper.GetStaticRouting(edgeServerNodes.Get(i)->GetObject<Ipv4>());
+        // edgeRouting->AddNetworkRouteTo(Ipv4Address("7.0.0.0"), Ipv4Mask("255.0.0.0"), 1);
+        Ipv4StaticRoutingHelper ipv4RoutingHelper;
         Ptr<Ipv4StaticRouting> edgeRouting =
             ipv4RoutingHelper.GetStaticRouting(edgeServerNodes.Get(i)->GetObject<Ipv4>());
-        edgeRouting->AddNetworkRouteTo(Ipv4Address("7.0.0.0"), Ipv4Mask("255.0.0.0"), 1);
+        edgeRouting->SetDefaultRoute(edgeIpIfaces.GetAddress(0), 1);
+    }
+
+    // Install tap bridges on edge servers (if enabled)
+    if (enableTap && numGnbs >= 2)
+    {
+        TapBridgeHelper tapBridge;
+        tapBridge.SetAttribute("Mode", StringValue("UseBridge"));
+
+        // Install tap bridge on edge server 0
+        tapBridge.SetAttribute("DeviceName", StringValue(tapEdge0Device));
+        tapBridge.Install(edgeServerNodes.Get(0), edgeServerDevices[0]);
+        NS_LOG_UNCOND("Tap bridge installed on Edge Server 0");
+        NS_LOG_UNCOND("  Edge Server 0 IP: " << g_cellIdToEdgeServerIp.begin()->second);
+        NS_LOG_UNCOND("  Tap device: " << tapEdge0Device);
+
+        // Install tap bridge on edge server 1
+        tapBridge.SetAttribute("DeviceName", StringValue(tapEdge1Device));
+        tapBridge.Install(edgeServerNodes.Get(1), edgeServerDevices[1]);
+        NS_LOG_UNCOND("Tap bridge installed on Edge Server 1");
+        NS_LOG_UNCOND("  Tap device: " << tapEdge1Device);
     }
 
     //--------------------------------------------------------------------------
