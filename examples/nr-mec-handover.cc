@@ -127,6 +127,87 @@ PredictHandoverTarget(uint16_t currentCellId)
 //==============================================================================
 
 /**
+ * @brief Debug callback for tracing IP packets on UE
+ */
+void
+UeIpRxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    Ipv4Header ipHeader;
+    Ptr<Packet> copy = packet->Copy();
+    copy->RemoveHeader(ipHeader);
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [UE IP RX] Interface=" << interface
+                  << " Src=" << ipHeader.GetSource()
+                  << " Dst=" << ipHeader.GetDestination()
+                  << " Proto=" << (uint32_t)ipHeader.GetProtocol());
+}
+
+void
+UeIpTxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    Ipv4Header ipHeader;
+    Ptr<Packet> copy = packet->Copy();
+    copy->RemoveHeader(ipHeader);
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [UE IP TX] Interface=" << interface
+                  << " Src=" << ipHeader.GetSource()
+                  << " Dst=" << ipHeader.GetDestination());
+}
+
+void
+UeIpDropTrace(const Ipv4Header& header, Ptr<const Packet> packet, Ipv4L3Protocol::DropReason reason, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [UE IP DROP] Interface=" << interface
+                  << " Src=" << header.GetSource()
+                  << " Dst=" << header.GetDestination()
+                  << " Reason=" << reason);
+}
+
+// PGW tracing callbacks
+void
+PgwIpRxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    Ipv4Header ipHeader;
+    Ptr<Packet> copy = packet->Copy();
+    copy->RemoveHeader(ipHeader);
+    // Only log packets involving tap subnet
+    Ipv4Address src = ipHeader.GetSource();
+    Ipv4Address dst = ipHeader.GetDestination();
+    // Check if src or dst is in 7.0.1.0/24 subnet
+    uint32_t srcVal = src.Get();
+    uint32_t dstVal = dst.Get();
+    uint32_t tapSubnet = Ipv4Address("7.0.1.0").Get();
+    uint32_t mask = Ipv4Mask("255.255.255.0").Get();
+    if ((srcVal & mask) == tapSubnet || (dstVal & mask) == tapSubnet)
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                      << "s [PGW IP RX] Interface=" << interface
+                      << " Src=" << src << " Dst=" << dst);
+    }
+}
+
+void
+PgwIpTxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    Ipv4Header ipHeader;
+    Ptr<Packet> copy = packet->Copy();
+    copy->RemoveHeader(ipHeader);
+    Ipv4Address src = ipHeader.GetSource();
+    Ipv4Address dst = ipHeader.GetDestination();
+    uint32_t srcVal = src.Get();
+    uint32_t dstVal = dst.Get();
+    uint32_t tapSubnet = Ipv4Address("7.0.1.0").Get();
+    uint32_t mask = Ipv4Mask("255.255.255.0").Get();
+    if ((srcVal & mask) == tapSubnet || (dstVal & mask) == tapSubnet)
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                      << "s [PGW IP TX] Interface=" << interface
+                      << " Src=" << src << " Dst=" << dst);
+    }
+}
+
+/**
  * @brief Callback when a measurement report is received at the gNB
  * This is the key hook for handover prediction
  */
@@ -484,7 +565,7 @@ main(int argc, char* argv[])
         // Only assign IP to UE's CSMA interface, not ghost node
         // Ghost node acts as L2 bridge - external Linux host will have its own IP
         Ipv4AddressHelper ipv4Tap;
-        ipv4Tap.SetBase("10.0.0.0", "255.255.255.0");
+        ipv4Tap.SetBase("7.0.1.0", "255.255.255.0");
         Ipv4InterfaceContainer tapIpIfaces = ipv4Tap.Assign(tapDevices.Get(0));  // UE only
         Ipv4Address ueLanIp = tapIpIfaces.GetAddress(0);
 
@@ -504,6 +585,24 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("  UE LAN IP (Tap): " << ueLanIp);
         NS_LOG_UNCOND("  Tap device: " << tapUeDevice);
         NS_LOG_UNCOND("  Please set Linux tap0 IP to 192.168.1.2/24 and Gateway to " << ueLanIp);
+
+        // Debug: Print UE routing table
+        NS_LOG_UNCOND("\nUE Routing Table:");
+        Ptr<Ipv4> ueIpv4 = ueNodes.Get(0)->GetObject<Ipv4>();
+        NS_LOG_UNCOND("UE has " << ueIpv4->GetNInterfaces() << " interfaces:");
+        for (uint32_t i = 0; i < ueIpv4->GetNInterfaces(); ++i)
+        {
+            NS_LOG_UNCOND("  Interface " << i << ": " << ueIpv4->GetAddress(i, 0).GetLocal());
+        }
+        Ptr<Ipv4StaticRouting> ueRouting =
+            ipv4RoutingHelper.GetStaticRouting(ueIpv4);
+        ueRouting->PrintRoutingTable(Create<OutputStreamWrapper>(&std::cout));
+
+        // Connect IP trace callbacks to UE for debugging
+        ueIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&UeIpRxTrace));
+        ueIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&UeIpTxTrace));
+        ueIpv4->TraceConnectWithoutContext("Drop", MakeCallback(&UeIpDropTrace));
+        NS_LOG_UNCOND("UE IP tracing enabled");
     }
 
     //--------------------------------------------------------------------------
@@ -582,6 +681,19 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("Tap bridge installed on Edge Server 1");
         NS_LOG_UNCOND("  Tap device: " << tapEdge1Device);
     }
+
+    // // Add route on PGW for UE's tap subnet (7.0.1.0/24) via UE (7.0.0.2) (To Be Deleted)
+    // // This allows edge servers to send replies back to the external Linux host
+    // if (enableTap)
+    // {
+    //     Ptr<Ipv4StaticRouting> pgwRouting =
+    //         ipv4RoutingHelper.GetStaticRouting(pgw->GetObject<Ipv4>());
+    //     pgwRouting->AddNetworkRouteTo(Ipv4Address("7.0.1.0"),
+    //                                    Ipv4Mask("255.255.255.0"),
+    //                                    Ipv4Address("7.0.0.2"),
+    //                                    1);  // Interface to SGW/UE network
+    //     NS_LOG_UNCOND("Added route on PGW: 7.0.1.0/24 via UE (7.0.0.2)");
+    // }
 
     //--------------------------------------------------------------------------
     // Attach UE to the closest gNB initially
@@ -671,6 +783,26 @@ main(int argc, char* argv[])
     // Start traffic after network stabilization
     edgeClientApps.Start(Seconds(2.0));
     edgeClientApps.Stop(Seconds(simTime - 1.0));
+
+    // Debug: Print PGW routing table
+    Ptr<Ipv4> pgwIpv4 = pgw->GetObject<Ipv4>();
+    NS_LOG_UNCOND("PGW has " << pgwIpv4->GetNInterfaces() << " interfaces:");
+    for (uint32_t i = 0; i < pgwIpv4->GetNInterfaces(); ++i)
+    {
+        NS_LOG_UNCOND("  Interface " << i << ": " << pgwIpv4->GetAddress(i, 0).GetLocal());
+    }
+
+    Ptr<Ipv4StaticRouting> pgwRouting =
+        ipv4RoutingHelper.GetStaticRouting(pgwIpv4);
+    pgwRouting->PrintRoutingTable(Create<OutputStreamWrapper>(&std::cout));
+
+    // Connect PGW IP trace callbacks for debugging
+    if (enableTap)
+    {
+        pgwIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&PgwIpRxTrace));
+        pgwIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&PgwIpTxTrace));
+        NS_LOG_UNCOND("PGW IP tracing enabled");
+    }
 
     //--------------------------------------------------------------------------
     // Schedule UE position printing
