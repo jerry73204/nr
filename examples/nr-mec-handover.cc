@@ -41,6 +41,9 @@
 #include "ns3/nr-module.h"
 #include "ns3/point-to-point-module.h"
 
+#include "ue-tunnel-app.h"
+#include "edge-tunnel-app.h"
+
 #include <iomanip>
 #include <map>
 #include <deque>
@@ -171,15 +174,16 @@ PgwIpRxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
     Ipv4Header ipHeader;
     Ptr<Packet> copy = packet->Copy();
     copy->RemoveHeader(ipHeader);
-    // Only log packets involving tap subnet
     Ipv4Address src = ipHeader.GetSource();
     Ipv4Address dst = ipHeader.GetDestination();
-    // Check if src or dst is in 7.0.1.0/24 subnet
+    // Log all packets from UE subnet (7.0.0.0/8) or to edge servers (10.x.x.x)
     uint32_t srcVal = src.Get();
     uint32_t dstVal = dst.Get();
-    uint32_t tapSubnet = Ipv4Address("7.0.1.0").Get();
-    uint32_t mask = Ipv4Mask("255.255.255.0").Get();
-    if ((srcVal & mask) == tapSubnet || (dstVal & mask) == tapSubnet)
+    uint32_t ueSubnet = Ipv4Address("7.0.0.0").Get();
+    uint32_t ueMask = Ipv4Mask("255.0.0.0").Get();
+    uint32_t edgeSubnet = Ipv4Address("10.0.0.0").Get();
+    uint32_t edgeMask = Ipv4Mask("255.0.0.0").Get();
+    if ((srcVal & ueMask) == ueSubnet || (dstVal & edgeMask) == edgeSubnet)
     {
         NS_LOG_UNCOND(Simulator::Now().GetSeconds()
                       << "s [PGW IP RX] Interface=" << interface
@@ -195,16 +199,42 @@ PgwIpTxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
     copy->RemoveHeader(ipHeader);
     Ipv4Address src = ipHeader.GetSource();
     Ipv4Address dst = ipHeader.GetDestination();
+    // Log packets from UE (7.0.0.x) to edge servers
     uint32_t srcVal = src.Get();
-    uint32_t dstVal = dst.Get();
-    uint32_t tapSubnet = Ipv4Address("7.0.1.0").Get();
-    uint32_t mask = Ipv4Mask("255.255.255.0").Get();
-    if ((srcVal & mask) == tapSubnet || (dstVal & mask) == tapSubnet)
+    uint32_t ueSubnet = Ipv4Address("7.0.0.0").Get();
+    uint32_t ueMask = Ipv4Mask("255.255.255.0").Get();
+    if ((srcVal & ueMask) == ueSubnet)
     {
         NS_LOG_UNCOND(Simulator::Now().GetSeconds()
                       << "s [PGW IP TX] Interface=" << interface
                       << " Src=" << src << " Dst=" << dst);
     }
+}
+
+// Edge Server tracing callbacks
+void
+EdgeIpRxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    Ipv4Header ipHeader;
+    Ptr<Packet> copy = packet->Copy();
+    copy->RemoveHeader(ipHeader);
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [EDGE IP RX] Interface=" << interface
+                  << " Src=" << ipHeader.GetSource()
+                  << " Dst=" << ipHeader.GetDestination()
+                  << " Proto=" << (uint32_t)ipHeader.GetProtocol());
+}
+
+void
+EdgeIpTxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    Ipv4Header ipHeader;
+    Ptr<Packet> copy = packet->Copy();
+    copy->RemoveHeader(ipHeader);
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [EDGE IP TX] Interface=" << interface
+                  << " Src=" << ipHeader.GetSource()
+                  << " Dst=" << ipHeader.GetDestination());
 }
 
 /**
@@ -546,6 +576,9 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     // Set up tap bridge for external connectivity (if enabled)
     //--------------------------------------------------------------------------
+    // Store UE's inner CSMA device for tunnel app (needs to be accessible later)
+    Ptr<NetDevice> ueInnerCsmaDevice = nullptr;
+
     if (enableTap)
     {
         // Set up Ghost node
@@ -562,6 +595,9 @@ main(int argc, char* argv[])
 
         NetDeviceContainer tapDevices = tapCsma.Install(tapLinkNodes);
 
+        // Store UE's CSMA device for tunnel app
+        ueInnerCsmaDevice = tapDevices.Get(0);
+
         // Only assign IP to UE's CSMA interface, not ghost node
         // Ghost node acts as L2 bridge - external Linux host will have its own IP
         Ipv4AddressHelper ipv4Tap;
@@ -571,6 +607,16 @@ main(int argc, char* argv[])
 
         Ptr<Ipv4> ipv4 = ueNodes.Get(0)->GetObject<Ipv4>();
         ipv4->SetAttribute("IpForward", BooleanValue(true));
+
+        // Disable forwarding specifically on the CSMA interface
+        // This prevents normal IP forwarding of packets from client subnet
+        // The tunnel app will handle forwarding these packets via UDP encapsulation
+        int32_t csmaIfIndex = ipv4->GetInterfaceForDevice(tapDevices.Get(0));
+        if (csmaIfIndex >= 0)
+        {
+            ipv4->SetForwarding(csmaIfIndex, false);
+            NS_LOG_UNCOND("Disabled IP forwarding on UE CSMA interface " << csmaIfIndex);
+        }
 
         TapBridgeHelper tapBridge;
         tapBridge.SetAttribute("Mode", StringValue("UseBridge"));
@@ -680,20 +726,79 @@ main(int argc, char* argv[])
         tapBridge.Install(edgeServerNodes.Get(1), edgeServerDevices[1]);
         NS_LOG_UNCOND("Tap bridge installed on Edge Server 1");
         NS_LOG_UNCOND("  Tap device: " << tapEdge1Device);
+
+        // Add IP tracing on Edge Server 0 for debugging
+        Ptr<Ipv4> edgeIpv4 = edgeServerNodes.Get(0)->GetObject<Ipv4>();
+        edgeIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&EdgeIpRxTrace));
+        edgeIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&EdgeIpTxTrace));
+        NS_LOG_UNCOND("Edge Server IP tracing enabled");
     }
 
-    // // Add route on PGW for UE's tap subnet (7.0.1.0/24) via UE (7.0.0.2) (To Be Deleted)
-    // // This allows edge servers to send replies back to the external Linux host
-    // if (enableTap)
-    // {
-    //     Ptr<Ipv4StaticRouting> pgwRouting =
-    //         ipv4RoutingHelper.GetStaticRouting(pgw->GetObject<Ipv4>());
-    //     pgwRouting->AddNetworkRouteTo(Ipv4Address("7.0.1.0"),
-    //                                    Ipv4Mask("255.255.255.0"),
-    //                                    Ipv4Address("7.0.0.2"),
-    //                                    1);  // Interface to SGW/UE network
-    //     NS_LOG_UNCOND("Added route on PGW: 7.0.1.0/24 via UE (7.0.0.2)");
-    // }
+    //--------------------------------------------------------------------------
+    // Set up UDP Tunnel Applications (if tap enabled)
+    // These tunnel client packets through the 5G network using IP-in-UDP encapsulation
+    // to bypass GTP filtering that drops packets with non-UE source IPs
+    //--------------------------------------------------------------------------
+    if (enableTap && ueInnerCsmaDevice)
+    {
+        // Install UeTunnelApp on UE node
+        // Captures packets from client (7.0.1.x) on CSMA interface
+        // Encapsulates and sends to Edge Server via 5G NR interface
+        Ptr<UeTunnelApp> ueTunnelApp = CreateObject<UeTunnelApp>();
+        ueTunnelApp->SetInnerDevice(ueInnerCsmaDevice);
+        ueTunnelApp->SetClientSubnet(Ipv4Address("7.0.1.0"), Ipv4Mask("255.255.255.0"));
+
+        // Set tunnel endpoint to first edge server (10.1.0.2)
+        // TODO: In a real scenario, this should dynamically switch based on handover
+        Ipv4Address edgeServer0Ip = Ipv4Address("10.1.0.2");
+        ueTunnelApp->SetTunnelEndpoint(edgeServer0Ip, 5000);
+        ueTunnelApp->SetLocalPort(5000);
+
+        ueNodes.Get(0)->AddApplication(ueTunnelApp);
+        ueTunnelApp->SetStartTime(Seconds(1.0));
+        ueTunnelApp->SetStopTime(Seconds(simTime));
+
+        NS_LOG_UNCOND("\nUE Tunnel App installed:");
+        NS_LOG_UNCOND("  Inner device: CSMA (7.0.1.1)");
+        NS_LOG_UNCOND("  Client subnet: 7.0.1.0/24");
+        NS_LOG_UNCOND("  Tunnel endpoint: " << edgeServer0Ip << ":5000");
+
+        // Install EdgeTunnelApp on each edge server
+        for (uint16_t i = 0; i < numGnbs && i < edgeServerDevices.size(); ++i)
+        {
+            Ptr<EdgeTunnelApp> edgeTunnelApp = CreateObject<EdgeTunnelApp>();
+            edgeTunnelApp->SetInnerDevice(edgeServerDevices[i]);
+
+            // Add tunnel mapping: packets to 7.0.1.x should go to UE NR IP (7.0.0.2)
+            edgeTunnelApp->AddTunnelMapping(
+                Ipv4Address("7.0.1.0"),
+                Ipv4Mask("255.255.255.0"),
+                ueIpAddr  // UE's NR interface IP (7.0.0.2)
+            );
+            edgeTunnelApp->SetLocalPort(5000);
+            edgeTunnelApp->SetTunnelPort(5000);
+
+            edgeServerNodes.Get(i)->AddApplication(edgeTunnelApp);
+            edgeTunnelApp->SetStartTime(Seconds(1.0));
+            edgeTunnelApp->SetStopTime(Seconds(simTime));
+
+            NS_LOG_UNCOND("Edge Tunnel App " << i << " installed:");
+            NS_LOG_UNCOND("  Mapping: 7.0.1.0/24 -> " << ueIpAddr);
+        }
+    }
+
+    // Add route on PGW for UE's tap subnet (7.0.1.0/24) via UE (7.0.0.2)
+    // This provides a more specific route for the client subnet
+    if (enableTap)
+    {
+        Ptr<Ipv4StaticRouting> pgwRouting =
+            ipv4RoutingHelper.GetStaticRouting(pgw->GetObject<Ipv4>());
+        pgwRouting->AddNetworkRouteTo(Ipv4Address("7.0.1.0"),
+                                       Ipv4Mask("255.255.255.0"),
+                                       Ipv4Address("7.0.0.2"),
+                                       1);  // Interface to SGW/UE network
+        NS_LOG_UNCOND("Added route on PGW: 7.0.1.0/24 via UE (7.0.0.2)");
+    }
 
     //--------------------------------------------------------------------------
     // Attach UE to the closest gNB initially

@@ -42,6 +42,8 @@ endforeach()
 build_lib_example(
   NAME nr-mec-handover
   SOURCE_FILES nr-mec-handover.cc
+               ue-tunnel-app.cc
+               edge-tunnel-app.cc
   LIBRARIES_TO_LINK ${libnr}
                     ${libflow-monitor}
                     ${libtap-bridge}
