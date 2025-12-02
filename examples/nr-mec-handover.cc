@@ -398,10 +398,6 @@ main(int argc, char* argv[])
     double gnbTxPower = 43.0;                // gNB TX power in dBm
     uint16_t numerology = 1;                 // NR numerology (1 = 30 kHz SCS)
 
-    // Traffic parameters
-    uint32_t packetSize = 1024;              // UDP packet size
-    double dataRate = 10.0;                  // Data rate in Mbps
-
     // Tap bridge parameters
     bool enableTap = false;                  // Enable tap bridge for external connectivity
     std::string tapUeDevice = "tap_z_pre_sub";   // Tap device for UE
@@ -763,28 +759,28 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("  Client subnet: 7.0.1.0/24");
         NS_LOG_UNCOND("  Tunnel endpoint: " << edgeServer0Ip << ":5000");
 
-        // Install EdgeTunnelApp on each edge server
-        for (uint16_t i = 0; i < numGnbs && i < edgeServerDevices.size(); ++i)
-        {
-            Ptr<EdgeTunnelApp> edgeTunnelApp = CreateObject<EdgeTunnelApp>();
-            edgeTunnelApp->SetInnerDevice(edgeServerDevices[i]);
+        // // Install EdgeTunnelApp on each edge server
+        // for (uint16_t i = 0; i < numGnbs && i < edgeServerDevices.size(); ++i)
+        // {
+        //     Ptr<EdgeTunnelApp> edgeTunnelApp = CreateObject<EdgeTunnelApp>();
+        //     edgeTunnelApp->SetInnerDevice(edgeServerDevices[i]);
 
-            // Add tunnel mapping: packets to 7.0.1.x should go to UE NR IP (7.0.0.2)
-            edgeTunnelApp->AddTunnelMapping(
-                Ipv4Address("7.0.1.0"),
-                Ipv4Mask("255.255.255.0"),
-                ueIpAddr  // UE's NR interface IP (7.0.0.2)
-            );
-            edgeTunnelApp->SetLocalPort(5000);
-            edgeTunnelApp->SetTunnelPort(5000);
+        //     // Add tunnel mapping: packets to 7.0.1.x should go to UE NR IP (7.0.0.2)
+        //     edgeTunnelApp->AddTunnelMapping(
+        //         Ipv4Address("7.0.1.0"),
+        //         Ipv4Mask("255.255.255.0"),
+        //         ueIpAddr  // UE's NR interface IP (7.0.0.2)
+        //     );
+        //     edgeTunnelApp->SetLocalPort(5000);
+        //     edgeTunnelApp->SetTunnelPort(5000);
 
-            edgeServerNodes.Get(i)->AddApplication(edgeTunnelApp);
-            edgeTunnelApp->SetStartTime(Seconds(1.0));
-            edgeTunnelApp->SetStopTime(Seconds(simTime));
+        //     edgeServerNodes.Get(i)->AddApplication(edgeTunnelApp);
+        //     edgeTunnelApp->SetStartTime(Seconds(1.0));
+        //     edgeTunnelApp->SetStopTime(Seconds(simTime));
 
-            NS_LOG_UNCOND("Edge Tunnel App " << i << " installed:");
-            NS_LOG_UNCOND("  Mapping: 7.0.1.0/24 -> " << ueIpAddr);
-        }
+        //     NS_LOG_UNCOND("Edge Tunnel App " << i << " installed:");
+        //     NS_LOG_UNCOND("  Mapping: 7.0.1.0/24 -> " << ueIpAddr);
+        // }
     }
 
     // Add route on PGW for UE's tap subnet (7.0.1.0/24) via UE (7.0.0.2)
@@ -862,34 +858,8 @@ main(int argc, char* argv[])
     Config::Connect(uePath.str() + "HandoverEndError", MakeCallback(&HandoverEndErrorCallback));
 
     //--------------------------------------------------------------------------
-    // Set up traffic applications (DL direction: Edge Server -> UE)
-    // NOTE: Using DL traffic to avoid scheduler crash bug with UL during handover
-    //--------------------------------------------------------------------------
-
-    uint16_t dlPort = 5000;
-
-    // Install UDP server (sink) on UE to receive DL traffic
-    UdpServerHelper ueServer(dlPort);
-    ApplicationContainer ueServerApp = ueServer.Install(ueNodes.Get(0));
-    ueServerApp.Start(Seconds(0.5));
-    ueServerApp.Stop(Seconds(simTime));
-
-    // Install UDP client on each edge server - they will send DL traffic to UE
-    // In a real MEC scenario, the active edge server would be determined by the serving gNB
-    ApplicationContainer edgeClientApps;
-    for (uint16_t i = 0; i < numGnbs; ++i)
-    {
-        UdpClientHelper edgeClient(ueIpAddr, dlPort);
-        edgeClient.SetAttribute("MaxPackets", UintegerValue(0xFFFFFFFF));
-        edgeClient.SetAttribute("Interval", TimeValue(Seconds(packetSize * 8.0 / (dataRate * 1e6))));
-        edgeClient.SetAttribute("PacketSize", UintegerValue(packetSize));
-        edgeClientApps.Add(edgeClient.Install(edgeServerNodes.Get(i)));
-    }
-    // Start traffic after network stabilization
-    edgeClientApps.Start(Seconds(2.0));
-    edgeClientApps.Stop(Seconds(simTime - 1.0));
-
     // Debug: Print PGW routing table
+    //--------------------------------------------------------------------------
     Ptr<Ipv4> pgwIpv4 = pgw->GetObject<Ipv4>();
     NS_LOG_UNCOND("PGW has " << pgwIpv4->GetNInterfaces() << " interfaces:");
     for (uint32_t i = 0; i < pgwIpv4->GetNInterfaces(); ++i)
@@ -927,10 +897,6 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("\n==============================================");
     NS_LOG_UNCOND("Simulation Complete");
     NS_LOG_UNCOND("==============================================");
-
-    // Print received packets at UE (DL traffic)
-    Ptr<UdpServer> ueUdpServer = ueServerApp.Get(0)->GetObject<UdpServer>();
-    NS_LOG_UNCOND("UE received " << ueUdpServer->GetReceived() << " packets from edge servers");
 
     Simulator::Destroy();
     return 0;
