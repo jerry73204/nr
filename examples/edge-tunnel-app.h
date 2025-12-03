@@ -161,6 +161,9 @@ class EdgeTunnelApp : public Application
     bool m_running;
     uint64_t m_txPackets;
     uint64_t m_rxPackets;
+
+    // Learned MAC addresses (IP -> MAC) for Docker containers behind tap bridge
+    std::map<uint32_t, Mac48Address> m_learnedMacs;
 };
 
 } // namespace ns3

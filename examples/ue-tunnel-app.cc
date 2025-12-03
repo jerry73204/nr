@@ -3,11 +3,14 @@
 
 #include "ue-tunnel-app.h"
 
+#include "ns3/arp-cache.h"
 #include "ns3/inet-socket-address.h"
 #include "ns3/ipv4-header.h"
+#include "ns3/ipv4-interface.h"
 #include "ns3/ipv4-l3-protocol.h"
 #include "ns3/ipv4.h"
 #include "ns3/log.h"
+#include "ns3/mac48-address.h"
 #include "ns3/simulator.h"
 #include "ns3/socket-factory.h"
 #include "ns3/udp-socket-factory.h"
@@ -229,6 +232,16 @@ UeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
         }
     }
 
+    // Learn the source MAC address for later use in ForwardToInner
+    // TapBridge packets come from external hosts, so we can't use ARP
+    if (Mac48Address::IsMatchingType(source))
+    {
+        Mac48Address srcMac = Mac48Address::ConvertFrom(source);
+        m_learnedMacs[srcAddr.Get()] = srcMac;
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Learned MAC: "
+                      << srcAddr << " -> " << srcMac);
+    }
+
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Upstream: "
                   << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")");
 
@@ -318,13 +331,50 @@ UeTunnelApp::ForwardToInner(Ptr<Packet> packet)
     Ipv4Address srcAddr = ipHeader.GetSource();
     Ipv4Address dstAddr = ipHeader.GetDestination();
 
+    // Try to resolve destination MAC - first check learned MACs, then ARP cache
+    Mac48Address dstMac = Mac48Address::GetBroadcast();  // Default to broadcast
+
+    // First check learned MAC table (for TapBridge clients)
+    auto it = m_learnedMacs.find(dstAddr.Get());
+    if (it != m_learnedMacs.end())
+    {
+        dstMac = it->second;
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Using learned MAC: "
+                      << dstAddr << " -> " << dstMac);
+    }
+    else
+    {
+        // Fall back to ARP cache lookup
+        Ptr<Ipv4L3Protocol> ipv4l3 = GetNode()->GetObject<Ipv4L3Protocol>();
+        if (ipv4l3)
+        {
+            int32_t ifIndex = ipv4l3->GetInterfaceForDevice(m_innerDevice);
+            if (ifIndex >= 0)
+            {
+                Ptr<Ipv4Interface> iface = ipv4l3->GetInterface(ifIndex);
+                if (iface)
+                {
+                    Ptr<ArpCache> arpCache = iface->GetArpCache();
+                    if (arpCache)
+                    {
+                        ArpCache::Entry* entry = arpCache->Lookup(dstAddr);
+                        if (entry && entry->IsAlive())
+                        {
+                            dstMac = Mac48Address::ConvertFrom(entry->GetMacAddress());
+                            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] ARP resolved: "
+                                          << dstAddr << " -> " << dstMac);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Forward to inner: "
-                  << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")");
+                  << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")"
+                  << " dstMac=" << dstMac);
 
     // Send to inner device (CSMA -> tap bridge -> external client)
-    // Use broadcast MAC since we don't have ARP resolution here
-    Mac48Address dstMac = Mac48Address::GetBroadcast();
-
     bool success = m_innerDevice->Send(packet, dstMac, 0x0800);  // IP protocol
 
     if (!success)

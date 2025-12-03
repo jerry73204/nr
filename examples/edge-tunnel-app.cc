@@ -3,7 +3,10 @@
 
 #include "edge-tunnel-app.h"
 
+#include "ns3/arp-cache.h"
 #include "ns3/inet-socket-address.h"
+#include "ns3/ipv4-interface.h"
+#include "ns3/ipv4-l3-protocol.h"
 #include "ns3/ipv4-header.h"
 #include "ns3/ipv4.h"
 #include "ns3/log.h"
@@ -290,6 +293,19 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
     Ipv4Address srcAddr = ipHeader.GetSource();
     Ipv4Address dstAddr = ipHeader.GetDestination();
 
+    // Learn the source MAC address for later use in ForwardToInner
+    // This learns Docker container MACs for when we forward tunnel responses
+    if (Mac48Address::IsMatchingType(source))
+    {
+        Mac48Address srcMac = Mac48Address::ConvertFrom(source);
+        if (m_learnedMacs.find(srcAddr.Get()) == m_learnedMacs.end())
+        {
+            m_learnedMacs[srcAddr.Get()] = srcMac;
+            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Learned MAC: "
+                          << srcAddr << " -> " << srcMac);
+        }
+    }
+
     // Look up if this destination should be tunneled to a UE (7.0.1.x subnet)
     Ipv4Address ueAddr = LookupTunnelEndpoint(dstAddr);
     if (ueAddr == Ipv4Address("0.0.0.0"))
@@ -399,15 +415,51 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
     Ipv4Address srcAddr = ipHeader.GetSource();
     Ipv4Address dstAddr = ipHeader.GetDestination();
 
+    // Try to resolve destination MAC - first check learned MACs, then ARP cache
+    Mac48Address dstMac = Mac48Address::GetBroadcast();  // Default to broadcast
+
+    // First check learned MAC table (for Docker containers behind TapBridge)
+    auto it = m_learnedMacs.find(dstAddr.Get());
+    if (it != m_learnedMacs.end())
+    {
+        dstMac = it->second;
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Using learned MAC: "
+                      << dstAddr << " -> " << dstMac);
+    }
+    else
+    {
+        // Fall back to ARP cache lookup
+        Ptr<Ipv4L3Protocol> ipv4l3 = GetNode()->GetObject<Ipv4L3Protocol>();
+        if (ipv4l3)
+        {
+            int32_t ifIndex = ipv4l3->GetInterfaceForDevice(m_innerDevice);
+            if (ifIndex >= 0)
+            {
+                Ptr<Ipv4Interface> iface = ipv4l3->GetInterface(ifIndex);
+                if (iface)
+                {
+                    Ptr<ArpCache> arpCache = iface->GetArpCache();
+                    if (arpCache)
+                    {
+                        ArpCache::Entry* entry = arpCache->Lookup(dstAddr);
+                        if (entry && entry->IsAlive())
+                        {
+                            dstMac = Mac48Address::ConvertFrom(entry->GetMacAddress());
+                            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] ARP resolved: "
+                                          << dstAddr << " -> " << dstMac);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Forward to inner: "
                   << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")"
                   << " IP hdr=" << headerSize << " bytes, proto=" << (int)ipHeader.GetProtocol()
-                  << " via device " << m_innerDevice->GetAddress());
+                  << " dstMac=" << dstMac << " via device " << m_innerDevice->GetAddress());
 
     // Send to inner device (CSMA -> GhostNode -> tap bridge -> Docker)
-    // Use broadcast MAC since we don't have ARP resolution here
-    Mac48Address dstMac = Mac48Address::GetBroadcast();
-
     bool success = m_innerDevice->Send(packet, dstMac, 0x0800);  // IP protocol
 
     if (success)

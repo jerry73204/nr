@@ -24,6 +24,8 @@
 #include "ns3/packet-socket.h"
 #include "ns3/mac48-address.h"
 
+#include <map>
+
 namespace ns3
 {
 
@@ -126,6 +128,9 @@ class UeTunnelApp : public Application
     bool m_running;
     uint64_t m_txPackets;
     uint64_t m_rxPackets;
+
+    // Learned MAC addresses (IP -> MAC) for clients behind tap bridge
+    std::map<uint32_t, Mac48Address> m_learnedMacs;
 };
 
 } // namespace ns3
