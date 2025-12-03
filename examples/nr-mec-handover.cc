@@ -454,6 +454,11 @@ main(int argc, char* argv[])
     NodeContainer edgeServerNodes;
     edgeServerNodes.Create(numGnbs);  // One edge server per gNB
 
+    // Ghost nodes for tap bridge (one per edge server)
+    // Architecture: PGW <--CSMA1--> EdgeServer <--CSMA2--> GhostNode <--TapBridge--> Docker
+    NodeContainer ghostNodes;
+    ghostNodes.Create(numGnbs);
+
     //--------------------------------------------------------------------------
     // Set up mobility
     //--------------------------------------------------------------------------
@@ -490,6 +495,7 @@ main(int argc, char* argv[])
     MobilityHelper edgeMobility;
     edgeMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
     edgeMobility.Install(edgeServerNodes);
+    edgeMobility.Install(ghostNodes);
 
     //--------------------------------------------------------------------------
     // Set up NR network
@@ -650,38 +656,71 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     // Set up edge servers and connect them to gNBs via PGW
     // Using CSMA for tap bridge compatibility (P2P uses PPP which can't handle Ethernet frames)
+    //
+    // Ghost Node Architecture:
+    //   PGW <--CSMA1--> EdgeServer <--CSMA2--> GhostNode <--TapBridge--> Docker
+    //
+    // This separates the PGW-facing interface from the tap-facing interface,
+    // allowing EdgeTunnelApp to properly intercept packets in both directions.
     //--------------------------------------------------------------------------
     Ptr<Node> pgw = epcHelper->GetPgwNode();
     internet.Install(edgeServerNodes);
+    internet.Install(ghostNodes);
 
-    // Store edge server devices for tap bridge installation
-    std::vector<Ptr<NetDevice>> edgeServerDevices;
+    // Store edge server devices for tunnel installation
+    std::vector<Ptr<NetDevice>> edgeServerOuterDevices;  // EdgeServer's device on PGW-facing CSMA
+    std::vector<Ptr<NetDevice>> edgeServerInnerDevices;  // EdgeServer's device on Ghost-facing CSMA
+    std::vector<Ptr<NetDevice>> ghostDevices;            // GhostNode's device (for TapBridge)
 
     for (uint16_t i = 0; i < numGnbs; ++i)
     {
-        // Create a CSMA network for each edge server connection to PGW
-        // This allows tap bridge to work properly (CSMA handles Ethernet frames)
         CsmaHelper csma;
         csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
         csma.SetChannelAttribute("Delay", TimeValue(MilliSeconds(1)));
 
-        NodeContainer edgeLink;
-        edgeLink.Add(pgw);
-        edgeLink.Add(edgeServerNodes.Get(i));
+        //----------------------------------------------------------------------
+        // CSMA1: PGW <-> EdgeServer (for tunnel packets from/to UE)
+        //----------------------------------------------------------------------
+        NodeContainer pgwEdgeLink;
+        pgwEdgeLink.Add(pgw);
+        pgwEdgeLink.Add(edgeServerNodes.Get(i));
 
-        NetDeviceContainer edgeDevices = csma.Install(edgeLink);
+        NetDeviceContainer pgwEdgeDevices = csma.Install(pgwEdgeLink);
 
-        // Assign IP addresses
+        // Assign IP addresses on PGW-EdgeServer segment
         std::ostringstream subnet;
         subnet << "10." << (i + 1) << ".0.0";
         Ipv4AddressHelper ipv4Helper;
         ipv4Helper.SetBase(subnet.str().c_str(), "255.255.255.0");
 
-        Ipv4InterfaceContainer edgeIpIfaces = ipv4Helper.Assign(edgeDevices);
-        Ipv4Address edgeServerIp = edgeIpIfaces.GetAddress(1);
+        Ipv4InterfaceContainer pgwEdgeIpIfaces = ipv4Helper.Assign(pgwEdgeDevices);
+        Ipv4Address edgeServerIp = pgwEdgeIpIfaces.GetAddress(1);
 
-        // Store the edge server's CSMA device (index 1; index 0 is PGW side)
-        edgeServerDevices.push_back(edgeDevices.Get(1));
+        // Store EdgeServer's outer device (PGW-facing)
+        edgeServerOuterDevices.push_back(pgwEdgeDevices.Get(1));  // EdgeServer's device
+
+        //----------------------------------------------------------------------
+        // CSMA2: EdgeServer <-> GhostNode (for tap bridge to Docker)
+        //----------------------------------------------------------------------
+        NodeContainer edgeGhostLink;
+        edgeGhostLink.Add(edgeServerNodes.Get(i));
+        edgeGhostLink.Add(ghostNodes.Get(i));
+
+        NetDeviceContainer edgeGhostDevices = csma.Install(edgeGhostLink);
+
+        // Assign IP addresses on EdgeServer-GhostNode segment
+        // Use 10.x.1.0/24 subnet (matching container setup: Docker router at 10.x.1.3)
+        // Pattern: EdgeServer at 10.x.1.1, GhostNode at 10.x.1.2, Docker at 10.x.1.3
+        std::ostringstream ghostSubnet;
+        ghostSubnet << "10." << (i + 1) << ".1.0";
+        Ipv4AddressHelper ghostIpHelper;
+        ghostIpHelper.SetBase(ghostSubnet.str().c_str(), "255.255.255.0");
+
+        Ipv4InterfaceContainer edgeGhostIpIfaces = ghostIpHelper.Assign(edgeGhostDevices);
+
+        // Store EdgeServer's inner device (Ghost-facing) and GhostNode's device
+        edgeServerInnerDevices.push_back(edgeGhostDevices.Get(0));  // EdgeServer's device
+        ghostDevices.push_back(edgeGhostDevices.Get(1));            // GhostNode's device (for TapBridge)
 
         // Get cell ID for this gNB
         Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(i)->GetObject<NrGnbNetDevice>();
@@ -693,34 +732,50 @@ main(int argc, char* argv[])
 
         NS_LOG_INFO("Edge Server " << i << " (IP: " << edgeServerIp << ") connected to gNB "
                     << i << " (CellId: " << cellId << ")");
+        NS_LOG_INFO("  Ghost segment: " << ghostSubnet.str() << "/24");
 
-        // Set up routing from edge server to UE network
-        // Ptr<Ipv4StaticRouting> edgeRouting =
-        //     ipv4RoutingHelper.GetStaticRouting(edgeServerNodes.Get(i)->GetObject<Ipv4>());
-        // edgeRouting->AddNetworkRouteTo(Ipv4Address("7.0.0.0"), Ipv4Mask("255.0.0.0"), 1);
+        // Set up routing from edge server to UE network (via PGW)
         Ipv4StaticRoutingHelper ipv4RoutingHelper;
         Ptr<Ipv4StaticRouting> edgeRouting =
             ipv4RoutingHelper.GetStaticRouting(edgeServerNodes.Get(i)->GetObject<Ipv4>());
-        edgeRouting->SetDefaultRoute(edgeIpIfaces.GetAddress(0), 1);
+        edgeRouting->SetDefaultRoute(pgwEdgeIpIfaces.GetAddress(0), 1);
+
+        // Set up routing on GhostNode (default route to EdgeServer)
+        Ptr<Ipv4StaticRouting> ghostRouting =
+            ipv4RoutingHelper.GetStaticRouting(ghostNodes.Get(i)->GetObject<Ipv4>());
+        ghostRouting->SetDefaultRoute(edgeGhostIpIfaces.GetAddress(0), 1);
+
+        // Add route on PGW for ghost segment (10.x.1.0/24 via EdgeServer)
+        // This enables edge-to-edge communication (Docker Router 0 <-> Docker Router 1)
+        Ptr<Ipv4StaticRouting> pgwRouting =
+            ipv4RoutingHelper.GetStaticRouting(pgw->GetObject<Ipv4>());
+        pgwRouting->AddNetworkRouteTo(
+            Ipv4Address(ghostSubnet.str().c_str()),
+            Ipv4Mask("255.255.255.0"),
+            pgwEdgeIpIfaces.GetAddress(1),  // Via EdgeServer (10.x.0.2)
+            pgw->GetObject<Ipv4>()->GetInterfaceForAddress(pgwEdgeIpIfaces.GetAddress(0))
+        );
+        NS_LOG_INFO("  PGW route added: " << ghostSubnet.str() << "/24 via " << pgwEdgeIpIfaces.GetAddress(1));
     }
 
-    // Install tap bridges on edge servers (if enabled)
+    // Install tap bridges on GHOST NODES (not edge servers)
+    // Ghost nodes act as pure L2 bridges between Docker and EdgeServer
     if (enableTap && numGnbs >= 2)
     {
         TapBridgeHelper tapBridge;
         tapBridge.SetAttribute("Mode", StringValue("UseBridge"));
 
-        // Install tap bridge on edge server 0
+        // Install tap bridge on ghost node 0
         tapBridge.SetAttribute("DeviceName", StringValue(tapEdge0Device));
-        tapBridge.Install(edgeServerNodes.Get(0), edgeServerDevices[0]);
-        NS_LOG_UNCOND("Tap bridge installed on Edge Server 0");
+        tapBridge.Install(ghostNodes.Get(0), ghostDevices[0]);
+        NS_LOG_UNCOND("Tap bridge installed on Ghost Node 0");
         NS_LOG_UNCOND("  Edge Server 0 IP: " << g_cellIdToEdgeServerIp.begin()->second);
         NS_LOG_UNCOND("  Tap device: " << tapEdge0Device);
 
-        // Install tap bridge on edge server 1
+        // Install tap bridge on ghost node 1
         tapBridge.SetAttribute("DeviceName", StringValue(tapEdge1Device));
-        tapBridge.Install(edgeServerNodes.Get(1), edgeServerDevices[1]);
-        NS_LOG_UNCOND("Tap bridge installed on Edge Server 1");
+        tapBridge.Install(ghostNodes.Get(1), ghostDevices[1]);
+        NS_LOG_UNCOND("Tap bridge installed on Ghost Node 1");
         NS_LOG_UNCOND("  Tap device: " << tapEdge1Device);
 
         // Add IP tracing on Edge Server 0 for debugging
@@ -744,7 +799,8 @@ main(int argc, char* argv[])
         ueTunnelApp->SetInnerDevice(ueInnerCsmaDevice);
         ueTunnelApp->SetClientSubnet(Ipv4Address("7.0.1.0"), Ipv4Mask("255.255.255.0"));
 
-        // Set tunnel endpoint to first edge server (10.1.0.2)
+        // Set tunnel endpoint to Edge Server 0 (10.1.0.2)
+        // EdgeTunnelApp on Edge Server will receive, decapsulate, and forward to tap
         // TODO: In a real scenario, this should dynamically switch based on handover
         Ipv4Address edgeServer0Ip = Ipv4Address("10.1.0.2");
         ueTunnelApp->SetTunnelEndpoint(edgeServer0Ip, 5000);
@@ -759,28 +815,41 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("  Client subnet: 7.0.1.0/24");
         NS_LOG_UNCOND("  Tunnel endpoint: " << edgeServer0Ip << ":5000");
 
-        // // Install EdgeTunnelApp on each edge server
-        // for (uint16_t i = 0; i < numGnbs && i < edgeServerDevices.size(); ++i)
-        // {
-        //     Ptr<EdgeTunnelApp> edgeTunnelApp = CreateObject<EdgeTunnelApp>();
-        //     edgeTunnelApp->SetInnerDevice(edgeServerDevices[i]);
+        // Install EdgeTunnelApp on each edge server
+        // Ghost Node Architecture:
+        //   PGW <--CSMA1--> EdgeServer <--CSMA2--> GhostNode <--TapBridge--> Docker
+        //                       |
+        //                  EdgeTunnelApp
+        //   - OuterDevice: EdgeServer's device on CSMA1 (receives tunnel packets from UE)
+        //   - InnerDevice: EdgeServer's device on CSMA2 (forwards to GhostNode -> Docker)
+        for (uint16_t i = 0; i < numGnbs && i < edgeServerInnerDevices.size(); ++i)
+        {
+            Ptr<EdgeTunnelApp> edgeTunnelApp = CreateObject<EdgeTunnelApp>();
 
-        //     // Add tunnel mapping: packets to 7.0.1.x should go to UE NR IP (7.0.0.2)
-        //     edgeTunnelApp->AddTunnelMapping(
-        //         Ipv4Address("7.0.1.0"),
-        //         Ipv4Mask("255.255.255.0"),
-        //         ueIpAddr  // UE's NR interface IP (7.0.0.2)
-        //     );
-        //     edgeTunnelApp->SetLocalPort(5000);
-        //     edgeTunnelApp->SetTunnelPort(5000);
+            // Set both devices (both belong to EdgeServer node):
+            // - Outer: EdgeServer's CSMA device facing PGW (tunnel packets arrive here)
+            // - Inner: EdgeServer's CSMA device facing GhostNode (forwards to Docker)
+            edgeTunnelApp->SetOuterDevice(edgeServerOuterDevices[i]);
+            edgeTunnelApp->SetInnerDevice(edgeServerInnerDevices[i]);
 
-        //     edgeServerNodes.Get(i)->AddApplication(edgeTunnelApp);
-        //     edgeTunnelApp->SetStartTime(Seconds(1.0));
-        //     edgeTunnelApp->SetStopTime(Seconds(simTime));
+            // Add tunnel mapping: packets to 7.0.1.x should go to UE NR IP (7.0.0.2)
+            edgeTunnelApp->AddTunnelMapping(
+                Ipv4Address("7.0.1.0"),
+                Ipv4Mask("255.255.255.0"),
+                ueIpAddr  // UE's NR interface IP (7.0.0.2)
+            );
+            edgeTunnelApp->SetLocalPort(5000);
+            edgeTunnelApp->SetTunnelPort(5000);
 
-        //     NS_LOG_UNCOND("Edge Tunnel App " << i << " installed:");
-        //     NS_LOG_UNCOND("  Mapping: 7.0.1.0/24 -> " << ueIpAddr);
-        // }
+            edgeServerNodes.Get(i)->AddApplication(edgeTunnelApp);
+            edgeTunnelApp->SetStartTime(Seconds(1.0));
+            edgeTunnelApp->SetStopTime(Seconds(simTime));
+
+            NS_LOG_UNCOND("Edge Tunnel App " << i << " installed:");
+            NS_LOG_UNCOND("  Outer device: " << edgeServerOuterDevices[i]->GetAddress());
+            NS_LOG_UNCOND("  Inner device: " << edgeServerInnerDevices[i]->GetAddress());
+            NS_LOG_UNCOND("  Mapping: 7.0.1.0/24 -> " << ueIpAddr);
+        }
     }
 
     // Add route on PGW for UE's tap subnet (7.0.1.0/24) via UE (7.0.0.2)

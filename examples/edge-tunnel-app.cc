@@ -31,6 +31,7 @@ EdgeTunnelApp::GetTypeId()
 
 EdgeTunnelApp::EdgeTunnelApp()
     : m_tunnelSocket(nullptr),
+      m_outerDevice(nullptr),
       m_innerDevice(nullptr),
       m_localPort(5000),
       m_tunnelPort(5000),
@@ -51,9 +52,17 @@ EdgeTunnelApp::DoDispose()
 {
     NS_LOG_FUNCTION(this);
     m_tunnelSocket = nullptr;
+    m_outerDevice = nullptr;
     m_innerDevice = nullptr;
     m_tunnelMappings.clear();
     Application::DoDispose();
+}
+
+void
+EdgeTunnelApp::SetOuterDevice(Ptr<NetDevice> device)
+{
+    NS_LOG_FUNCTION(this << device);
+    m_outerDevice = device;
 }
 
 void
@@ -94,7 +103,7 @@ EdgeTunnelApp::StartApplication()
     NS_LOG_FUNCTION(this);
     m_running = true;
 
-    // Create UDP socket for tunnel communication
+    // Create UDP socket for tunnel communication (for sending)
     if (!m_tunnelSocket)
     {
         TypeId tid = TypeId::LookupByName("ns3::UdpSocketFactory");
@@ -107,29 +116,43 @@ EdgeTunnelApp::StartApplication()
             NS_LOG_ERROR("Failed to bind tunnel socket to port " << m_localPort);
             return;
         }
-
-        // Set receive callback for incoming tunnel packets
-        m_tunnelSocket->SetRecvCallback(MakeCallback(&EdgeTunnelApp::ReceiveFromTunnel, this));
+        // Note: We use promiscuous callback on outer device to capture tunnel packets
+        // Socket callback is not used because we need L2 interception
     }
 
-    // Register promiscuous callback on inner device to capture packets for tunneling
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Started");
+
+    // Register promiscuous callback on OUTER device (PGW side)
+    // This captures incoming tunnel packets from UE
+    if (m_outerDevice)
+    {
+        m_outerDevice->SetPromiscReceiveCallback(
+            MakeCallback(&EdgeTunnelApp::ReceiveFromOuter, this));
+        NS_LOG_UNCOND("  Outer device (PGW side): " << m_outerDevice->GetAddress());
+    }
+    else
+    {
+        NS_LOG_ERROR("No outer device set for EdgeTunnelApp");
+    }
+
+    // Register promiscuous callback on INNER device (Ghost/tap side)
+    // This captures packets from Docker destined for client subnet
     if (m_innerDevice)
     {
         m_innerDevice->SetPromiscReceiveCallback(
             MakeCallback(&EdgeTunnelApp::ReceiveFromInner, this));
-
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Started");
-        NS_LOG_UNCOND("  Inner device: " << m_innerDevice->GetAddress());
-        NS_LOG_UNCOND("  Local port: " << m_localPort);
-        NS_LOG_UNCOND("  Tunnel mappings:");
-        for (const auto& entry : m_tunnelMappings)
-        {
-            NS_LOG_UNCOND("    " << entry.subnet << "/" << entry.mask << " -> " << entry.ueNrIp);
-        }
+        NS_LOG_UNCOND("  Inner device (Ghost/tap side): " << m_innerDevice->GetAddress());
     }
     else
     {
         NS_LOG_ERROR("No inner device set for EdgeTunnelApp");
+    }
+
+    NS_LOG_UNCOND("  Local port: " << m_localPort);
+    NS_LOG_UNCOND("  Tunnel mappings:");
+    for (const auto& entry : m_tunnelMappings)
+    {
+        NS_LOG_UNCOND("    " << entry.subnet << "/" << entry.mask << " -> " << entry.ueNrIp);
     }
 }
 
@@ -166,13 +189,14 @@ EdgeTunnelApp::LookupTunnelEndpoint(Ipv4Address dstAddr)
 }
 
 bool
-EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
+EdgeTunnelApp::ReceiveFromOuter(Ptr<NetDevice> device,
                                  Ptr<const Packet> packet,
                                  uint16_t protocol,
                                  const Address& source,
                                  const Address& destination,
                                  NetDevice::PacketType packetType)
 {
+    // This callback handles packets arriving from PGW (tunnel packets from UE)
     NS_LOG_FUNCTION(this << packet->GetSize() << protocol);
 
     if (!m_running)
@@ -180,9 +204,77 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
         return false;
     }
 
-    // Log all packets received on inner device for debugging
-    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Inner packet: proto=0x"
-                 << std::hex << protocol << std::dec << " size=" << packet->GetSize());
+    // Only handle IP packets
+    if (protocol != 0x0800)
+    {
+        return false;
+    }
+
+    // Extract IP header
+    Ptr<Packet> pktCopy = packet->Copy();
+    Ipv4Header ipHeader;
+    pktCopy->RemoveHeader(ipHeader);
+
+    Ipv4Address srcAddr = ipHeader.GetSource();
+    Ipv4Address dstAddr = ipHeader.GetDestination();
+
+    // Check if this is a tunnel packet (UDP to our IP on tunnel port)
+    Ptr<Ipv4> ipv4 = GetNode()->GetObject<Ipv4>();
+    bool isLocalDst = false;
+    for (uint32_t i = 0; i < ipv4->GetNInterfaces(); ++i)
+    {
+        for (uint32_t j = 0; j < ipv4->GetNAddresses(i); ++j)
+        {
+            if (ipv4->GetAddress(i, j).GetLocal() == dstAddr)
+            {
+                isLocalDst = true;
+                break;
+            }
+        }
+        if (isLocalDst) break;
+    }
+
+    if (isLocalDst && ipHeader.GetProtocol() == 17)  // UDP
+    {
+        // Check UDP port
+        UdpHeader udpHeader;
+        pktCopy->RemoveHeader(udpHeader);
+
+        if (udpHeader.GetDestinationPort() == m_localPort)
+        {
+            // This is an incoming tunnel packet from UE!
+            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Received from tunnel: "
+                          << pktCopy->GetSize() << " bytes from " << srcAddr);
+
+            m_rxPackets++;
+
+            // Schedule ForwardToInner to run after this callback completes
+            // This avoids issues with CSMA channel state during promiscuous callback
+            Simulator::ScheduleNow(&EdgeTunnelApp::ForwardToInner, this, pktCopy);
+
+            return true;  // We handled this packet
+        }
+    }
+
+    // Not a tunnel packet, let it pass through
+    return false;
+}
+
+bool
+EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
+                                 Ptr<const Packet> packet,
+                                 uint16_t protocol,
+                                 const Address& source,
+                                 const Address& destination,
+                                 NetDevice::PacketType packetType)
+{
+    // This callback handles packets from Docker (Ghost/tap side) going to client subnet
+    NS_LOG_FUNCTION(this << packet->GetSize() << protocol);
+
+    if (!m_running)
+    {
+        return false;
+    }
 
     // Only handle IP packets
     if (protocol != 0x0800)
@@ -190,7 +282,7 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
         return false;
     }
 
-    // Extract IP header to check destination
+    // Extract IP header
     Ptr<Packet> pktCopy = packet->Copy();
     Ipv4Header ipHeader;
     pktCopy->PeekHeader(ipHeader);
@@ -198,7 +290,7 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
     Ipv4Address srcAddr = ipHeader.GetSource();
     Ipv4Address dstAddr = ipHeader.GetDestination();
 
-    // Look up if this destination should be tunneled to a UE
+    // Look up if this destination should be tunneled to a UE (7.0.1.x subnet)
     Ipv4Address ueAddr = LookupTunnelEndpoint(dstAddr);
     if (ueAddr == Ipv4Address("0.0.0.0"))
     {
@@ -210,9 +302,12 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
     Ptr<Ipv4> ipv4 = GetNode()->GetObject<Ipv4>();
     for (uint32_t i = 0; i < ipv4->GetNInterfaces(); ++i)
     {
-        if (ipv4->GetAddress(i, 0).GetLocal() == srcAddr)
+        for (uint32_t j = 0; j < ipv4->GetNAddresses(i); ++j)
         {
-            return false;  // Don't tunnel our own packets
+            if (ipv4->GetAddress(i, j).GetLocal() == srcAddr)
+            {
+                return false;  // Don't tunnel our own packets
+            }
         }
     }
 
@@ -240,7 +335,7 @@ EdgeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket, Ipv4Address ueAddr)
     // Create a copy of the inner packet as the tunnel payload
     Ptr<Packet> tunnelPacket = innerPacket->Copy();
 
-    // Send to UE via tunnel
+    // Send to UE via tunnel (goes through outer device to PGW)
     InetSocketAddress remote = InetSocketAddress(ueAddr, m_tunnelPort);
     int ret = m_tunnelSocket->SendTo(tunnelPacket, 0, remote);
 
@@ -259,6 +354,8 @@ EdgeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket, Ipv4Address ueAddr)
 void
 EdgeTunnelApp::ReceiveFromTunnel(Ptr<Socket> socket)
 {
+    // This method is kept for potential future use but is not currently used
+    // We use promiscuous callback on outer device instead
     NS_LOG_FUNCTION(this << socket);
 
     Ptr<Packet> packet;
@@ -298,22 +395,28 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
 
     // Extract destination from IP header for logging
     Ipv4Header ipHeader;
-    packet->PeekHeader(ipHeader);
+    uint32_t headerSize = packet->PeekHeader(ipHeader);
     Ipv4Address srcAddr = ipHeader.GetSource();
     Ipv4Address dstAddr = ipHeader.GetDestination();
 
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Forward to inner: "
-                  << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")");
+                  << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")"
+                  << " IP hdr=" << headerSize << " bytes, proto=" << (int)ipHeader.GetProtocol()
+                  << " via device " << m_innerDevice->GetAddress());
 
-    // Send to inner device (CSMA -> tap bridge -> external router)
+    // Send to inner device (CSMA -> GhostNode -> tap bridge -> Docker)
     // Use broadcast MAC since we don't have ARP resolution here
     Mac48Address dstMac = Mac48Address::GetBroadcast();
 
     bool success = m_innerDevice->Send(packet, dstMac, 0x0800);  // IP protocol
 
-    if (!success)
+    if (success)
     {
-        NS_LOG_ERROR("Failed to forward packet to inner device");
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Send success on inner device");
+    }
+    else
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] ERROR: Send failed on inner device!");
     }
 }
 

@@ -6,10 +6,17 @@
  * @brief UDP Tunnel Application for Edge Server Node
  *
  * This application creates a UDP tunnel on the Edge Server that:
- * - Upstream: Receives UDP tunnel packets from UE, decapsulates, and forwards
- *   to the inner interface (tap/external router)
- * - Downstream: Captures packets from inner interface destined for client subnet,
- *   encapsulates in UDP, and sends through tunnel to UE
+ * - Upstream: Receives UDP tunnel packets from UE on outer device (PGW side),
+ *   decapsulates, and forwards to inner device (Ghost/tap side)
+ * - Downstream: Captures packets from inner device destined for client subnet,
+ *   encapsulates in UDP, and sends through tunnel to UE via outer device
+ *
+ * Architecture (Ghost Node approach):
+ *   PGW <--CSMA--> EdgeServer <--CSMA--> GhostNode <--TapBridge--> Docker
+ *                      |
+ *                EdgeTunnelApp
+ *                - outerDevice: CSMA to PGW (tunnel packets arrive here)
+ *                - innerDevice: CSMA to GhostNode (forwards to Docker)
  */
 
 #ifndef EDGE_TUNNEL_APP_H
@@ -29,10 +36,8 @@ namespace ns3
 /**
  * @brief Edge Server Tunnel Application
  *
- * Tunnels packets between External Router (via tap/CSMA) and UE (via PGW).
- * - Receives tunneled packets from UE and forwards to external router
- * - Captures packets destined for client subnet and tunnels to UE
- * - Maintains mapping: client subnet (7.0.1.0/24) -> UE NR IP (7.0.0.2)
+ * Tunnels packets between External Router (via Ghost/tap) and UE (via PGW).
+ * Uses two separate CSMA devices for clean packet flow.
  */
 class EdgeTunnelApp : public Application
 {
@@ -43,8 +48,14 @@ class EdgeTunnelApp : public Application
     ~EdgeTunnelApp() override;
 
     /**
-     * @brief Set the inner (CSMA/tap side) network device
-     * @param device The CSMA NetDevice connected to the tap bridge/external router
+     * @brief Set the outer (PGW side) network device
+     * @param device The CSMA NetDevice connected to PGW (tunnel packets arrive here)
+     */
+    void SetOuterDevice(Ptr<NetDevice> device);
+
+    /**
+     * @brief Set the inner (Ghost/tap side) network device
+     * @param device The CSMA NetDevice connected to GhostNode (forwards to Docker)
      */
     void SetInnerDevice(Ptr<NetDevice> device);
 
@@ -76,8 +87,21 @@ class EdgeTunnelApp : public Application
     void StopApplication() override;
 
     /**
-     * @brief Callback for packets received on inner (CSMA) interface
-     * Captures packets destined for client subnet, encapsulates, and tunnels to UE
+     * @brief Callback for packets received on outer (PGW) device
+     * Captures incoming tunnel packets (UDP to local port), decapsulates,
+     * and forwards to inner device
+     */
+    bool ReceiveFromOuter(Ptr<NetDevice> device,
+                          Ptr<const Packet> packet,
+                          uint16_t protocol,
+                          const Address& source,
+                          const Address& destination,
+                          NetDevice::PacketType packetType);
+
+    /**
+     * @brief Callback for packets received on inner (Ghost/tap) device
+     * Captures packets destined for client subnet, encapsulates,
+     * and tunnels to UE via outer device
      */
     bool ReceiveFromInner(Ptr<NetDevice> device,
                           Ptr<const Packet> packet,
@@ -88,7 +112,7 @@ class EdgeTunnelApp : public Application
 
     /**
      * @brief Callback for UDP packets received from tunnel (from UE)
-     * Decapsulates and forwards to inner (CSMA) interface
+     * Decapsulates and forwards to inner device
      */
     void ReceiveFromTunnel(Ptr<Socket> socket);
 
@@ -100,7 +124,7 @@ class EdgeTunnelApp : public Application
     void SendToTunnel(Ptr<const Packet> innerPacket, Ipv4Address ueAddr);
 
     /**
-     * @brief Forward decapsulated packet to inner (CSMA) interface
+     * @brief Forward decapsulated packet to inner device (toward Ghost/tap)
      * @param packet The decapsulated IP packet
      */
     void ForwardToInner(Ptr<Packet> packet);
@@ -124,7 +148,10 @@ class EdgeTunnelApp : public Application
     // Tunnel UDP socket
     Ptr<Socket> m_tunnelSocket;
 
-    // Inner device (CSMA, connected to tap/external router)
+    // Outer device (CSMA to PGW - where tunnel packets arrive)
+    Ptr<NetDevice> m_outerDevice;
+
+    // Inner device (CSMA to GhostNode - forwards to Docker via TapBridge)
     Ptr<NetDevice> m_innerDevice;
 
     // Tunnel ports
