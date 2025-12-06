@@ -895,6 +895,13 @@ main(int argc, char* argv[])
             edgeTunnelApp->SetOuterDevice(edgeServerOuterDevices[i]);
             edgeTunnelApp->SetInnerDevice(edgeServerInnerDevices[i]);
 
+            // Set inner subnet (10.x.1.0/24) - packets to other subnets will be dropped
+            // This ensures connection breaks after handover instead of routing via PGW
+            std::ostringstream innerSubnetStr;
+            innerSubnetStr << "10." << (i + 1) << ".1.0";
+            edgeTunnelApp->SetInnerSubnet(Ipv4Address(innerSubnetStr.str().c_str()),
+                                          Ipv4Mask("255.255.255.0"));
+
             // Add tunnel mapping: packets to 7.0.1.x should go to UE NR IP (7.0.0.2)
             edgeTunnelApp->AddTunnelMapping(
                 Ipv4Address("7.0.1.0"),

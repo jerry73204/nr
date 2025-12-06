@@ -40,7 +40,10 @@ EdgeTunnelApp::EdgeTunnelApp()
       m_tunnelPort(5000),
       m_running(false),
       m_txPackets(0),
-      m_rxPackets(0)
+      m_rxPackets(0),
+      m_innerSubnet(Ipv4Address("0.0.0.0")),
+      m_innerMask(Ipv4Mask("0.0.0.0")),
+      m_innerSubnetSet(false)
 {
     NS_LOG_FUNCTION(this);
 }
@@ -98,6 +101,15 @@ EdgeTunnelApp::SetTunnelPort(uint16_t port)
 {
     NS_LOG_FUNCTION(this << port);
     m_tunnelPort = port;
+}
+
+void
+EdgeTunnelApp::SetInnerSubnet(Ipv4Address subnet, Ipv4Mask mask)
+{
+    NS_LOG_FUNCTION(this << subnet << mask);
+    m_innerSubnet = subnet;
+    m_innerMask = mask;
+    m_innerSubnetSet = true;
 }
 
 void
@@ -414,6 +426,23 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
     uint32_t headerSize = packet->PeekHeader(ipHeader);
     Ipv4Address srcAddr = ipHeader.GetSource();
     Ipv4Address dstAddr = ipHeader.GetDestination();
+
+    // Check if destination is on our inner subnet
+    // If not, drop the packet (it would be broadcast and routed via PGW otherwise)
+    if (m_innerSubnetSet)
+    {
+        uint32_t dstVal = dstAddr.Get();
+        uint32_t subnetVal = m_innerSubnet.Get();
+        uint32_t maskVal = m_innerMask.Get();
+
+        if ((dstVal & maskVal) != (subnetVal & maskVal))
+        {
+            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] DROP: "
+                          << dstAddr << " not on inner subnet " << m_innerSubnet << "/"
+                          << m_innerMask << " - connection should break after handover");
+            return;
+        }
+    }
 
     // Try to resolve destination MAC - first check learned MACs, then ARP cache
     Mac48Address dstMac = Mac48Address::GetBroadcast();  // Default to broadcast

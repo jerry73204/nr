@@ -79,6 +79,16 @@ class EdgeTunnelApp : public Application
      */
     void SetTunnelPort(uint16_t port);
 
+    /**
+     * @brief Set the local inner subnet (for filtering forwarded packets)
+     * @param subnet The inner subnet (e.g., 10.1.1.0)
+     * @param mask The subnet mask (e.g., 255.255.255.0)
+     *
+     * Only packets destined for this subnet will be forwarded to inner device.
+     * This prevents packets from being broadcast when destination is unreachable.
+     */
+    void SetInnerSubnet(Ipv4Address subnet, Ipv4Mask mask);
+
   protected:
     void DoDispose() override;
 
@@ -164,6 +174,11 @@ class EdgeTunnelApp : public Application
 
     // Learned MAC addresses (IP -> MAC) for Docker containers behind tap bridge
     std::map<uint32_t, Mac48Address> m_learnedMacs;
+
+    // Inner subnet (for filtering - only forward packets destined for this subnet)
+    Ipv4Address m_innerSubnet;
+    Ipv4Mask m_innerMask;
+    bool m_innerSubnetSet;
 };
 
 } // namespace ns3
