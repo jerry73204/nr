@@ -78,6 +78,9 @@ struct MeasurementHistory
 std::map<uint16_t, std::deque<MeasurementHistory>> g_measurementHistory;
 const size_t MAX_HISTORY_SIZE = 10;
 
+// Global reference to UE tunnel app for dynamic endpoint switching
+Ptr<UeTunnelApp> g_ueTunnelApp = nullptr;
+
 //==============================================================================
 // Handover Prediction Algorithm (Simple Linear Extrapolation)
 //==============================================================================
@@ -176,14 +179,19 @@ PgwIpRxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
     copy->RemoveHeader(ipHeader);
     Ipv4Address src = ipHeader.GetSource();
     Ipv4Address dst = ipHeader.GetDestination();
-    // Log all packets from UE subnet (7.0.0.0/8) or to edge servers (10.x.x.x)
+    // Only log traffic between UE (7.0.x.x) and Edge (10.x.x.x)
     uint32_t srcVal = src.Get();
     uint32_t dstVal = dst.Get();
     uint32_t ueSubnet = Ipv4Address("7.0.0.0").Get();
     uint32_t ueMask = Ipv4Mask("255.0.0.0").Get();
     uint32_t edgeSubnet = Ipv4Address("10.0.0.0").Get();
     uint32_t edgeMask = Ipv4Mask("255.0.0.0").Get();
-    if ((srcVal & ueMask) == ueSubnet || (dstVal & edgeMask) == edgeSubnet)
+    bool isSrcUe = (srcVal & ueMask) == ueSubnet;
+    bool isDstUe = (dstVal & ueMask) == ueSubnet;
+    bool isSrcEdge = (srcVal & edgeMask) == edgeSubnet;
+    bool isDstEdge = (dstVal & edgeMask) == edgeSubnet;
+    // Log if packet is between UE and Edge subnets
+    if ((isSrcUe && isDstEdge) || (isSrcEdge && isDstUe))
     {
         NS_LOG_UNCOND(Simulator::Now().GetSeconds()
                       << "s [PGW IP RX] Interface=" << interface
@@ -199,11 +207,19 @@ PgwIpTxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
     copy->RemoveHeader(ipHeader);
     Ipv4Address src = ipHeader.GetSource();
     Ipv4Address dst = ipHeader.GetDestination();
-    // Log packets from UE (7.0.0.x) to edge servers
+    // Only log traffic between UE (7.0.x.x) and Edge (10.x.x.x)
     uint32_t srcVal = src.Get();
+    uint32_t dstVal = dst.Get();
     uint32_t ueSubnet = Ipv4Address("7.0.0.0").Get();
-    uint32_t ueMask = Ipv4Mask("255.255.255.0").Get();
-    if ((srcVal & ueMask) == ueSubnet)
+    uint32_t ueMask = Ipv4Mask("255.0.0.0").Get();
+    uint32_t edgeSubnet = Ipv4Address("10.0.0.0").Get();
+    uint32_t edgeMask = Ipv4Mask("255.0.0.0").Get();
+    bool isSrcUe = (srcVal & ueMask) == ueSubnet;
+    bool isDstUe = (dstVal & ueMask) == ueSubnet;
+    bool isSrcEdge = (srcVal & edgeMask) == edgeSubnet;
+    bool isDstEdge = (dstVal & edgeMask) == edgeSubnet;
+    // Log if packet is between UE and Edge subnets
+    if ((isSrcUe && isDstEdge) || (isSrcEdge && isDstUe))
     {
         NS_LOG_UNCOND(Simulator::Now().GetSeconds()
                       << "s [PGW IP TX] Interface=" << interface
@@ -218,11 +234,27 @@ EdgeIpRxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
     Ipv4Header ipHeader;
     Ptr<Packet> copy = packet->Copy();
     copy->RemoveHeader(ipHeader);
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                  << "s [EDGE IP RX] Interface=" << interface
-                  << " Src=" << ipHeader.GetSource()
-                  << " Dst=" << ipHeader.GetDestination()
-                  << " Proto=" << (uint32_t)ipHeader.GetProtocol());
+    Ipv4Address src = ipHeader.GetSource();
+    Ipv4Address dst = ipHeader.GetDestination();
+    // Only log traffic between UE (7.0.x.x) and Edge (10.x.x.x)
+    uint32_t srcVal = src.Get();
+    uint32_t dstVal = dst.Get();
+    uint32_t ueSubnet = Ipv4Address("7.0.0.0").Get();
+    uint32_t ueMask = Ipv4Mask("255.0.0.0").Get();
+    uint32_t edgeSubnet = Ipv4Address("10.0.0.0").Get();
+    uint32_t edgeMask = Ipv4Mask("255.0.0.0").Get();
+    bool isSrcUe = (srcVal & ueMask) == ueSubnet;
+    bool isDstUe = (dstVal & ueMask) == ueSubnet;
+    bool isSrcEdge = (srcVal & edgeMask) == edgeSubnet;
+    bool isDstEdge = (dstVal & edgeMask) == edgeSubnet;
+    // Log if packet is between UE and Edge subnets
+    if ((isSrcUe && isDstEdge) || (isSrcEdge && isDstUe))
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                      << "s [EDGE IP RX] Interface=" << interface
+                      << " Src=" << src << " Dst=" << dst
+                      << " Proto=" << (uint32_t)ipHeader.GetProtocol());
+    }
 }
 
 void
@@ -231,10 +263,26 @@ EdgeIpTxTrace(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
     Ipv4Header ipHeader;
     Ptr<Packet> copy = packet->Copy();
     copy->RemoveHeader(ipHeader);
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
-                  << "s [EDGE IP TX] Interface=" << interface
-                  << " Src=" << ipHeader.GetSource()
-                  << " Dst=" << ipHeader.GetDestination());
+    Ipv4Address src = ipHeader.GetSource();
+    Ipv4Address dst = ipHeader.GetDestination();
+    // Only log traffic between UE (7.0.x.x) and Edge (10.x.x.x)
+    uint32_t srcVal = src.Get();
+    uint32_t dstVal = dst.Get();
+    uint32_t ueSubnet = Ipv4Address("7.0.0.0").Get();
+    uint32_t ueMask = Ipv4Mask("255.0.0.0").Get();
+    uint32_t edgeSubnet = Ipv4Address("10.0.0.0").Get();
+    uint32_t edgeMask = Ipv4Mask("255.0.0.0").Get();
+    bool isSrcUe = (srcVal & ueMask) == ueSubnet;
+    bool isDstUe = (dstVal & ueMask) == ueSubnet;
+    bool isSrcEdge = (srcVal & edgeMask) == edgeSubnet;
+    bool isDstEdge = (dstVal & edgeMask) == edgeSubnet;
+    // Log if packet is between UE and Edge subnets
+    if ((isSrcUe && isDstEdge) || (isSrcEdge && isDstUe))
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                      << "s [EDGE IP TX] Interface=" << interface
+                      << " Src=" << src << " Dst=" << dst);
+    }
 }
 
 /**
@@ -343,7 +391,14 @@ HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t
 
     if (g_cellIdToEdgeServerIp.count(cellId) > 0)
     {
-        NS_LOG_UNCOND("  Now connected to Edge Server at " << g_cellIdToEdgeServerIp[cellId]);
+        Ipv4Address newEdgeServerIp = g_cellIdToEdgeServerIp[cellId];
+        NS_LOG_UNCOND("  Now connected to Edge Server at " << newEdgeServerIp);
+
+        // Switch tunnel endpoint to new Edge Server
+        if (g_ueTunnelApp)
+        {
+            g_ueTunnelApp->UpdateTunnelEndpoint(newEdgeServerIp);
+        }
     }
 }
 
@@ -372,7 +427,7 @@ PrintUePosition(Ptr<Node> ueNode)
                   << " | Velocity=" << vel.x << " m/s"
                   << " | ServingCell=" << g_currentServingCell);
 
-    Simulator::Schedule(Seconds(1.0), &PrintUePosition, ueNode);
+    Simulator::Schedule(Seconds(10.0), &PrintUePosition, ueNode);
 }
 
 //==============================================================================
@@ -740,6 +795,11 @@ main(int argc, char* argv[])
             ipv4RoutingHelper.GetStaticRouting(edgeServerNodes.Get(i)->GetObject<Ipv4>());
         edgeRouting->SetDefaultRoute(pgwEdgeIpIfaces.GetAddress(0), 1);
 
+        // Note: We intentionally do NOT add a route to 7.0.1.0/24 on EdgeServer
+        // The default route would forward these packets via PGW, but EdgeTunnelApp handles them
+        // via tunneling. The duplicate TX via IP stack is harmless but wastes some bandwidth.
+        // A proper fix would require modifying ns-3's IP forwarding behavior.
+
         // Set up routing on GhostNode (default route to EdgeServer)
         Ptr<Ipv4StaticRouting> ghostRouting =
             ipv4RoutingHelper.GetStaticRouting(ghostNodes.Get(i)->GetObject<Ipv4>());
@@ -799,9 +859,8 @@ main(int argc, char* argv[])
         ueTunnelApp->SetInnerDevice(ueInnerCsmaDevice);
         ueTunnelApp->SetClientSubnet(Ipv4Address("7.0.1.0"), Ipv4Mask("255.255.255.0"));
 
-        // Set tunnel endpoint to Edge Server 0 (10.1.0.2)
-        // EdgeTunnelApp on Edge Server will receive, decapsulate, and forward to tap
-        // TODO: In a real scenario, this should dynamically switch based on handover
+        // Set initial tunnel endpoint to Edge Server 0 (10.1.0.2)
+        // This will dynamically switch based on handover via HandoverEndOkCallback
         Ipv4Address edgeServer0Ip = Ipv4Address("10.1.0.2");
         ueTunnelApp->SetTunnelEndpoint(edgeServer0Ip, 5000);
         ueTunnelApp->SetLocalPort(5000);
@@ -810,10 +869,14 @@ main(int argc, char* argv[])
         ueTunnelApp->SetStartTime(Seconds(1.0));
         ueTunnelApp->SetStopTime(Seconds(simTime));
 
+        // Store global reference for handover-triggered endpoint switching
+        g_ueTunnelApp = ueTunnelApp;
+
         NS_LOG_UNCOND("\nUE Tunnel App installed:");
         NS_LOG_UNCOND("  Inner device: CSMA (7.0.1.1)");
         NS_LOG_UNCOND("  Client subnet: 7.0.1.0/24");
-        NS_LOG_UNCOND("  Tunnel endpoint: " << edgeServer0Ip << ":5000");
+        NS_LOG_UNCOND("  Initial tunnel endpoint: " << edgeServer0Ip << ":5000");
+        NS_LOG_UNCOND("  (Endpoint will switch dynamically on handover)");
 
         // Install EdgeTunnelApp on each edge server
         // Ghost Node Architecture:
@@ -951,7 +1014,7 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     // Schedule UE position printing
     //--------------------------------------------------------------------------
-    Simulator::Schedule(Seconds(1.0), &PrintUePosition, ueNodes.Get(0));
+    Simulator::Schedule(Seconds(10.0), &PrintUePosition, ueNodes.Get(0));
 
     //--------------------------------------------------------------------------
     // Run simulation

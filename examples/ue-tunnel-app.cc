@@ -91,6 +91,26 @@ UeTunnelApp::SetClientSubnet(Ipv4Address subnet, Ipv4Mask mask)
 }
 
 void
+UeTunnelApp::UpdateTunnelEndpoint(Ipv4Address newEdgeServerIp)
+{
+    NS_LOG_FUNCTION(this << newEdgeServerIp);
+
+    if (m_edgeServerIp != newEdgeServerIp)
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                      << "s [UE_TUNNEL] Switching tunnel endpoint: "
+                      << m_edgeServerIp << " -> " << newEdgeServerIp);
+        m_edgeServerIp = newEdgeServerIp;
+    }
+}
+
+Ipv4Address
+UeTunnelApp::GetTunnelEndpoint() const
+{
+    return m_edgeServerIp;
+}
+
+void
 UeTunnelApp::StartApplication()
 {
     NS_LOG_FUNCTION(this);

@@ -65,6 +65,18 @@ class UeTunnelApp : public Application
      */
     void SetClientSubnet(Ipv4Address subnet, Ipv4Mask mask);
 
+    /**
+     * @brief Update tunnel endpoint dynamically (called during handover)
+     * @param newEdgeServerIp The new Edge Server IP address
+     */
+    void UpdateTunnelEndpoint(Ipv4Address newEdgeServerIp);
+
+    /**
+     * @brief Get current tunnel endpoint IP
+     * @return Current Edge Server IP address
+     */
+    Ipv4Address GetTunnelEndpoint() const;
+
   protected:
     void DoDispose() override;
 
