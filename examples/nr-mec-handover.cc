@@ -772,7 +772,9 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     Ptr<Node> pgw = epcHelper->GetPgwNode();
     internet.Install(edgeServerNodes);
-    internet.Install(ghostNodes);
+    // NOTE: Do NOT install internet stack on ghostNodes - they are pure L2 bridges
+    // Installing IP stack causes ARP confusion and routing loops
+    // internet.Install(ghostNodes);  // REMOVED - ghost nodes are L2 only
 
     // Store edge server devices for tunnel installation
     std::vector<Ptr<NetDevice>> edgeServerOuterDevices;  // EdgeServer's device on PGW-facing CSMA
@@ -783,7 +785,9 @@ main(int argc, char* argv[])
     {
         CsmaHelper csma;
         csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
-        csma.SetChannelAttribute("Delay", TimeValue(MilliSeconds(1)));
+        // Use small non-zero delay to avoid CSMA timing issues
+        // MilliSeconds(1) is too high for real-time responsiveness
+        csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(10)));
 
         //----------------------------------------------------------------------
         // CSMA1: PGW <-> EdgeServer (for tunnel packets from/to UE)
@@ -817,13 +821,15 @@ main(int argc, char* argv[])
 
         // Assign IP addresses on EdgeServer-GhostNode segment
         // Use 10.x.1.0/24 subnet (matching container setup: Docker router at 10.x.1.3)
-        // Pattern: EdgeServer at 10.x.1.1, GhostNode at 10.x.1.2, Docker at 10.x.1.3
+        // Pattern: EdgeServer at 10.x.1.1, Docker (via tap) at 10.x.1.3
+        // NOTE: Only assign IP to EdgeServer, NOT to GhostNode (it's a pure L2 bridge)
         std::ostringstream ghostSubnet;
         ghostSubnet << "10." << (i + 1) << ".1.0";
         Ipv4AddressHelper ghostIpHelper;
         ghostIpHelper.SetBase(ghostSubnet.str().c_str(), "255.255.255.0");
 
-        Ipv4InterfaceContainer edgeGhostIpIfaces = ghostIpHelper.Assign(edgeGhostDevices);
+        // Only assign IP to EdgeServer's inner device (index 0), not GhostNode (index 1)
+        Ipv4InterfaceContainer edgeGhostIpIfaces = ghostIpHelper.Assign(edgeGhostDevices.Get(0));
 
         // Store EdgeServer's inner device (Ghost-facing) and GhostNode's device
         edgeServerInnerDevices.push_back(edgeGhostDevices.Get(0));  // EdgeServer's device
@@ -852,10 +858,7 @@ main(int argc, char* argv[])
         // via tunneling. The duplicate TX via IP stack is harmless but wastes some bandwidth.
         // A proper fix would require modifying ns-3's IP forwarding behavior.
 
-        // Set up routing on GhostNode (default route to EdgeServer)
-        Ptr<Ipv4StaticRouting> ghostRouting =
-            ipv4RoutingHelper.GetStaticRouting(ghostNodes.Get(i)->GetObject<Ipv4>());
-        ghostRouting->SetDefaultRoute(edgeGhostIpIfaces.GetAddress(0), 1);
+        // NOTE: GhostNode has no IP stack - it's a pure L2 bridge, no routing needed
 
         // Add route on PGW for ghost segment (10.x.1.0/24 via EdgeServer)
         // This enables edge-to-edge communication (Docker Router 0 <-> Docker Router 1)
