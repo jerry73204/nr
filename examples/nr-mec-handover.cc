@@ -43,6 +43,7 @@
 
 #include "ue-tunnel-app.h"
 #include "edge-tunnel-app.h"
+#include "handover-prediction-file.h"
 
 #include <iomanip>
 #include <map>
@@ -341,17 +342,30 @@ MeasurementReportCallback(std::string path,
 
     // Run handover prediction
     uint16_t predictedTarget = PredictHandoverTarget(cellId);
-    if (predictedTarget > 0)
-    {
-        NS_LOG_INFO("  [PREDICTION] Handover likely to Cell " << predictedTarget);
 
-        // Get the edge server for the predicted target
-        if (g_cellIdToEdgeServerIp.count(predictedTarget) > 0)
+    // Write prediction to file (only if changed or interval elapsed)
+    Ipv4Address targetEdgeIp = Ipv4Address("0.0.0.0");
+    double rsrpTrend = 0.0;
+
+    if (predictedTarget > 0 && g_cellIdToEdgeServerIp.count(predictedTarget) > 0)
+    {
+        targetEdgeIp = g_cellIdToEdgeServerIp[predictedTarget];
+
+        // Calculate trend from history if available
+        const auto& history = g_measurementHistory[predictedTarget];
+        if (history.size() >= 2)
         {
-            NS_LOG_INFO("  [PREDICTION] Traffic will switch to Edge Server at "
-                        << g_cellIdToEdgeServerIp[predictedTarget]);
+            rsrpTrend = static_cast<double>(history.back().rsrp - history.front().rsrp)
+                        / static_cast<double>(history.size() - 1);
         }
+
+        NS_LOG_INFO("  [PREDICTION] Handover likely to Cell " << predictedTarget
+                    << " (Edge: " << targetEdgeIp << ", trend: " << rsrpTrend << " dB/meas)");
     }
+
+    // Update prediction file (low overhead - only writes on change)
+    HandoverPredictionFile::GetInstance().UpdatePrediction(
+        imsi, cellId, predictedTarget, targetEdgeIp, servingRsrp, rsrpTrend);
 }
 
 /**
@@ -368,13 +382,26 @@ HandoverStartCallback(std::string path,
                   << "s [HANDOVER START] IMSI=" << imsi
                   << " Source=" << sourceCellId << " -> Target=" << targetCellId);
 
-    if (g_cellIdToEdgeServerIp.count(sourceCellId) > 0 &&
-        g_cellIdToEdgeServerIp.count(targetCellId) > 0)
+    Ipv4Address sourceEdgeIp = Ipv4Address("0.0.0.0");
+    Ipv4Address targetEdgeIp = Ipv4Address("0.0.0.0");
+
+    if (g_cellIdToEdgeServerIp.count(sourceCellId) > 0)
     {
-        NS_LOG_UNCOND("  Edge Server switching: "
-                      << g_cellIdToEdgeServerIp[sourceCellId] << " -> "
-                      << g_cellIdToEdgeServerIp[targetCellId]);
+        sourceEdgeIp = g_cellIdToEdgeServerIp[sourceCellId];
     }
+    if (g_cellIdToEdgeServerIp.count(targetCellId) > 0)
+    {
+        targetEdgeIp = g_cellIdToEdgeServerIp[targetCellId];
+    }
+
+    if (sourceEdgeIp != Ipv4Address("0.0.0.0") && targetEdgeIp != Ipv4Address("0.0.0.0"))
+    {
+        NS_LOG_UNCOND("  Edge Server switching: " << sourceEdgeIp << " -> " << targetEdgeIp);
+    }
+
+    // Write handover start event to file
+    HandoverPredictionFile::GetInstance().WriteHandoverEvent(
+        imsi, sourceCellId, targetCellId, sourceEdgeIp, targetEdgeIp, "handover_start");
 }
 
 /**
@@ -387,11 +414,20 @@ HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t
                   << "s [HANDOVER SUCCESS] IMSI=" << imsi
                   << " New ServingCell=" << cellId);
 
+    uint16_t previousCell = g_currentServingCell;
     g_currentServingCell = cellId;
+
+    Ipv4Address previousEdgeIp = Ipv4Address("0.0.0.0");
+    Ipv4Address newEdgeServerIp = Ipv4Address("0.0.0.0");
+
+    if (g_cellIdToEdgeServerIp.count(previousCell) > 0)
+    {
+        previousEdgeIp = g_cellIdToEdgeServerIp[previousCell];
+    }
 
     if (g_cellIdToEdgeServerIp.count(cellId) > 0)
     {
-        Ipv4Address newEdgeServerIp = g_cellIdToEdgeServerIp[cellId];
+        newEdgeServerIp = g_cellIdToEdgeServerIp[cellId];
         NS_LOG_UNCOND("  Now connected to Edge Server at " << newEdgeServerIp);
 
         // Switch tunnel endpoint to new Edge Server
@@ -400,6 +436,10 @@ HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t
             g_ueTunnelApp->UpdateTunnelEndpoint(newEdgeServerIp);
         }
     }
+
+    // Write handover success event to file
+    HandoverPredictionFile::GetInstance().WriteHandoverEvent(
+        imsi, previousCell, cellId, previousEdgeIp, newEdgeServerIp, "handover_success");
 }
 
 /**
@@ -442,7 +482,7 @@ main(int argc, char* argv[])
     double gnbSpacing = 500.0;               // Distance between gNBs in meters
     double simTime = 3000.0;                   // Simulation time in seconds
     // double ueSpeed = 20.0;                   // UE speed in m/s (72 km/h)
-    double ueSpeed = 2;
+    double ueSpeed = 10;
     double ueStartX = 50.0;                  // UE starting X position (near first gNB for stable attachment)
     bool logging = true;                     // Enable detailed logging
     std::string handoverAlgo = "A3Rsrp";     // Handover algorithm: A3Rsrp or A2A4Rsrq
@@ -459,6 +499,10 @@ main(int argc, char* argv[])
     std::string tapEdge0Device = "tap_edge0";    // Tap device for edge server 0
     std::string tapEdge1Device = "tap_edge1";    // Tap device for edge server 1
 
+    // Handover prediction file parameters
+    std::string predictionFilePath = "/tmp/ns3_handover";  // Base path for prediction files
+    double predictionWriteIntervalMs = 100.0;              // Minimum interval between file writes
+
     CommandLine cmd(__FILE__);
     cmd.AddValue("numGnbs", "Number of gNBs", numGnbs);
     cmd.AddValue("gnbSpacing", "Distance between gNBs (m)", gnbSpacing);
@@ -473,7 +517,15 @@ main(int argc, char* argv[])
     cmd.AddValue("tapUeDevice", "Tap device name for UE", tapUeDevice);
     cmd.AddValue("tapEdge0Device", "Tap device name for edge server 0", tapEdge0Device);
     cmd.AddValue("tapEdge1Device", "Tap device name for edge server 1", tapEdge1Device);
+    cmd.AddValue("predictionFilePath", "Base path for handover prediction files", predictionFilePath);
+    cmd.AddValue("predictionWriteIntervalMs", "Min interval between prediction file writes (ms)", predictionWriteIntervalMs);
     cmd.Parse(argc, argv);
+
+    // Initialize handover prediction file system
+    HandoverPredictionFile::GetInstance().Initialize(
+        predictionFilePath,
+        MilliSeconds(predictionWriteIntervalMs));
+    NS_LOG_UNCOND("Handover prediction file initialized: " << predictionFilePath << ".json");
 
     // Configure real-time simulator and checksums when tap bridge is enabled
     if (enableTap)
