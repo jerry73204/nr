@@ -482,7 +482,7 @@ main(int argc, char* argv[])
     double gnbSpacing = 500.0;               // Distance between gNBs in meters
     double simTime = 3000.0;                   // Simulation time in seconds
     // double ueSpeed = 20.0;                   // UE speed in m/s (72 km/h)
-    double ueSpeed = 10;
+    double ueSpeed = 2;
     double ueStartX = 50.0;                  // UE starting X position (near first gNB for stable attachment)
     bool logging = true;                     // Enable detailed logging
     std::string handoverAlgo = "A3Rsrp";     // Handover algorithm: A3Rsrp or A2A4Rsrq

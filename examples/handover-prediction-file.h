@@ -13,6 +13,8 @@
  * 2. Uses atomic rename (write to .tmp, rename to final) - single syscall
  * 3. Batches writes with a minimum interval to avoid excessive I/O
  * 4. Pre-formats strings to minimize work during callback
+ * 5. Async I/O mode (default): Uses background thread for file writes to avoid
+ *    blocking the real-time simulator - critical for tap bridge timing
  */
 
 #ifndef HANDOVER_PREDICTION_FILE_H
@@ -22,9 +24,14 @@
 #include "ns3/simulator.h"
 #include "ns3/ipv4-address.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <queue>
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 namespace ns3 {
@@ -38,13 +45,20 @@ public:
         return instance;
     }
 
+    ~HandoverPredictionFile()
+    {
+        Shutdown();
+    }
+
     /**
      * @brief Initialize the prediction file system
      * @param basePath Base path for prediction files (e.g., "/tmp/ns3_handover")
      * @param minWriteInterval Minimum time between writes to reduce I/O
+     * @param asyncWrite Use background thread for file writes (recommended for real-time mode)
      */
     void Initialize(const std::string& basePath = "/tmp/ns3_handover",
-                    Time minWriteInterval = MilliSeconds(100))
+                    Time minWriteInterval = MilliSeconds(100),
+                    bool asyncWrite = true)
     {
         m_basePath = basePath;
         m_filePath = basePath + ".json";
@@ -52,10 +66,37 @@ public:
         m_minWriteInterval = minWriteInterval;
         m_lastWriteTime = Time(0);
         m_lastPredictedTarget = 0;
+        m_asyncWrite = asyncWrite;
         m_initialized = true;
+
+        // Start background writer thread if async mode enabled
+        if (m_asyncWrite)
+        {
+            m_writerRunning = true;
+            m_writerThread = std::thread(&HandoverPredictionFile::WriterThreadFunc, this);
+        }
 
         // Write initial empty state
         WriteState(0, 0, Ipv4Address("0.0.0.0"), 0, 0.0);
+    }
+
+    /**
+     * @brief Shutdown the prediction file system (flushes pending writes)
+     */
+    void Shutdown()
+    {
+        if (m_asyncWrite && m_writerRunning)
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_queueMutex);
+                m_writerRunning = false;
+            }
+            m_queueCv.notify_one();
+            if (m_writerThread.joinable())
+            {
+                m_writerThread.join();
+            }
+        }
     }
 
     /**
@@ -177,38 +218,116 @@ private:
     }
 
     /**
-     * @brief Atomic write using rename (prevents partial reads)
+     * @brief Queue or perform atomic write (async in real-time mode)
      */
     void AtomicWrite(const std::string& finalPath,
                      const std::string& tmpPath,
                      const char* data,
                      size_t len)
     {
-        // Write to temp file
+        if (m_asyncWrite)
+        {
+            // Queue for background thread - non-blocking
+            WriteJob job;
+            job.finalPath = finalPath;
+            job.tmpPath = tmpPath;
+            job.data = std::string(data, len);
+
+            {
+                std::lock_guard<std::mutex> lock(m_queueMutex);
+                m_writeQueue.push(std::move(job));
+            }
+            m_queueCv.notify_one();
+        }
+        else
+        {
+            // Synchronous write (blocking)
+            DoAtomicWrite(finalPath, tmpPath, data, len);
+        }
+    }
+
+    /**
+     * @brief Perform the actual atomic write (called from thread or sync)
+     */
+    void DoAtomicWrite(const std::string& finalPath,
+                       const std::string& tmpPath,
+                       const char* data,
+                       size_t len)
+    {
         FILE* f = fopen(tmpPath.c_str(), "w");
         if (f)
         {
             fwrite(data, 1, len, f);
             fclose(f);
-            // Atomic rename (single syscall, very fast)
             rename(tmpPath.c_str(), finalPath.c_str());
         }
     }
 
     /**
-     * @brief Format IPv4 address to static buffer (avoids allocation)
+     * @brief Background writer thread function
+     */
+    void WriterThreadFunc()
+    {
+        while (true)
+        {
+            WriteJob job;
+            {
+                std::unique_lock<std::mutex> lock(m_queueMutex);
+                m_queueCv.wait(lock, [this] {
+                    return !m_writeQueue.empty() || !m_writerRunning;
+                });
+
+                if (!m_writerRunning && m_writeQueue.empty())
+                {
+                    break;  // Shutdown requested and queue is empty
+                }
+
+                if (!m_writeQueue.empty())
+                {
+                    job = std::move(m_writeQueue.front());
+                    m_writeQueue.pop();
+                }
+                else
+                {
+                    continue;
+                }
+            }
+
+            // Perform write outside of lock
+            DoAtomicWrite(job.finalPath, job.tmpPath, job.data.c_str(), job.data.size());
+        }
+    }
+
+    /**
+     * @brief Format IPv4 address to one of two alternating static buffers
+     *
+     * Uses two buffers to allow two FormatIp calls in the same expression
+     * (e.g., snprintf(..., FormatIp(ip1), FormatIp(ip2), ...))
      */
     const char* FormatIp(Ipv4Address addr)
     {
-        static char ipBuf[16];
+        static char ipBuf[2][16];  // Two buffers for alternating use
+        static int bufIndex = 0;
+
+        char* buf = ipBuf[bufIndex];
+        bufIndex = 1 - bufIndex;  // Alternate between 0 and 1
+
         uint32_t ip = addr.Get();
-        snprintf(ipBuf, sizeof(ipBuf), "%u.%u.%u.%u",
+        snprintf(buf, 16, "%u.%u.%u.%u",
                  (ip >> 24) & 0xFF,
                  (ip >> 16) & 0xFF,
                  (ip >> 8) & 0xFF,
                  ip & 0xFF);
-        return ipBuf;
+        return buf;
     }
+
+    // Write job for async queue
+    struct WriteJob
+    {
+        std::string finalPath;
+        std::string tmpPath;
+        std::string data;
+    };
 
     std::string m_basePath;
     std::string m_filePath;
@@ -217,6 +336,14 @@ private:
     Time m_lastWriteTime;
     uint16_t m_lastPredictedTarget;
     bool m_initialized = false;
+
+    // Async write members
+    bool m_asyncWrite = true;
+    std::thread m_writerThread;
+    std::queue<WriteJob> m_writeQueue;
+    std::mutex m_queueMutex;
+    std::condition_variable m_queueCv;
+    std::atomic<bool> m_writerRunning{false};
 };
 
 }  // namespace ns3
