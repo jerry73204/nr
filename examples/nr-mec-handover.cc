@@ -443,7 +443,7 @@ main(int argc, char* argv[])
     double simTime = 3000.0;                   // Simulation time in seconds
     // double ueSpeed = 20.0;                   // UE speed in m/s (72 km/h)
     double ueSpeed = 2;
-    double ueStartX = 50.0;                  // UE starting X position (near first gNB for stable attachment)
+    double ueStartX = 0.0;                  // UE starting X position (near first gNB for stable attachment)
     bool logging = true;                     // Enable detailed logging
     std::string handoverAlgo = "A3Rsrp";     // Handover algorithm: A3Rsrp or A2A4Rsrq
 
@@ -563,11 +563,14 @@ main(int argc, char* argv[])
     nrHelper->SetEpcHelper(epcHelper);
 
     // Configure handover algorithm
+    // Balance between early handover and ping-pong prevention:
+    // - Moderate hysteresis (2.0 dB) prevents ping-pong from shadowing variations
+    // - Short time-to-trigger (128 ms) for reasonably fast handover
     if (handoverAlgo == "A3Rsrp")
     {
         nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
-        nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(3.0));
-        nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(256)));
+        nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(2.0));
+        nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(128)));
     }
     else if (handoverAlgo == "A2A4Rsrq")
     {
@@ -585,24 +588,27 @@ main(int argc, char* argv[])
     // Configure channel
     Ptr<NrChannelHelper> channelHelper = CreateObject<NrChannelHelper>();
     channelHelper->ConfigureFactories("UMa", "Default", "ThreeGpp");  // Urban Macro
-    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(true));
+    // Disable shadowing for predictable handover timing (enable for realistic variation)
+    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
     channelHelper->AssignChannelsToBands({band});
     allBwps = CcBwpCreator::GetAllBwps({band});
 
-    // Configure antennas
-    nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(4));
-    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(8));
+    // Configure antennas - use smaller arrays for more omnidirectional coverage
+    // This helps with handover by ensuring neighbor cells have comparable signal strength
+    nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(1));
+    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(1));
     nrHelper->SetGnbAntennaAttribute("AntennaElement",
-                                     PointerValue(CreateObject<ThreeGppAntennaModel>()));
+                                     PointerValue(CreateObject<IsotropicAntennaModel>()));
 
-    nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(2));
-    nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(4));
+    nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(1));
+    nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(1));
     nrHelper->SetUeAntennaAttribute("AntennaElement",
                                     PointerValue(CreateObject<IsotropicAntennaModel>()));
 
-    // Beamforming
+    // Beamforming - use CellScanBeamforming for handover support
+    // DirectPathBeamforming only forms beams to connected UEs, so neighbor cells appear weak
     idealBeamformingHelper->SetAttribute("BeamformingMethod",
-                                         TypeIdValue(DirectPathBeamforming::GetTypeId()));
+                                         TypeIdValue(CellScanBeamforming::GetTypeId()));
 
     // Install NR devices
     NetDeviceContainer gnbNetDevs = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
@@ -702,9 +708,9 @@ main(int argc, char* argv[])
         ueRouting->PrintRoutingTable(Create<OutputStreamWrapper>(&std::cout));
 
         // Connect IP trace callbacks to UE for debugging
-        ueIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&UeIpRxTrace));
-        ueIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&UeIpTxTrace));
-        ueIpv4->TraceConnectWithoutContext("Drop", MakeCallback(&UeIpDropTrace));
+        // ueIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&UeIpRxTrace));
+        // ueIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&UeIpTxTrace));
+        // ueIpv4->TraceConnectWithoutContext("Drop", MakeCallback(&UeIpDropTrace));
         NS_LOG_UNCOND("UE IP tracing enabled");
     }
 
@@ -839,9 +845,9 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("  Tap device: " << tapEdge1Device);
 
         // Add IP tracing on Edge Server 0 for debugging
-        Ptr<Ipv4> edgeIpv4 = edgeServerNodes.Get(0)->GetObject<Ipv4>();
-        edgeIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&EdgeIpRxTrace));
-        edgeIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&EdgeIpTxTrace));
+        // Ptr<Ipv4> edgeIpv4 = edgeServerNodes.Get(0)->GetObject<Ipv4>();
+        // edgeIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&EdgeIpRxTrace));
+        // edgeIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&EdgeIpTxTrace));
         NS_LOG_UNCOND("Edge Server IP tracing enabled");
     }
 
@@ -924,16 +930,16 @@ main(int argc, char* argv[])
 
     // Add route on PGW for UE's tap subnet (7.0.1.0/24) via UE (7.0.0.2)
     // This provides a more specific route for the client subnet
-    if (enableTap)
-    {
-        Ptr<Ipv4StaticRouting> pgwRouting =
-            ipv4RoutingHelper.GetStaticRouting(pgw->GetObject<Ipv4>());
-        pgwRouting->AddNetworkRouteTo(Ipv4Address("7.0.1.0"),
-                                       Ipv4Mask("255.255.255.0"),
-                                       Ipv4Address("7.0.0.2"),
-                                       1);  // Interface to SGW/UE network
-        NS_LOG_UNCOND("Added route on PGW: 7.0.1.0/24 via UE (7.0.0.2)");
-    }
+    // if (enableTap)
+    // {
+    //     Ptr<Ipv4StaticRouting> pgwRouting =
+    //         ipv4RoutingHelper.GetStaticRouting(pgw->GetObject<Ipv4>());
+    //     pgwRouting->AddNetworkRouteTo(Ipv4Address("7.0.1.0"),
+    //                                    Ipv4Mask("255.255.255.0"),
+    //                                    Ipv4Address("7.0.0.2"),
+    //                                    1);  // Interface to SGW/UE network
+    //     NS_LOG_UNCOND("Added route on PGW: 7.0.1.0/24 via UE (7.0.0.2)");
+    // }
 
     //--------------------------------------------------------------------------
     // Attach UE to the closest gNB initially
@@ -1011,12 +1017,12 @@ main(int argc, char* argv[])
     pgwRouting->PrintRoutingTable(Create<OutputStreamWrapper>(&std::cout));
 
     // Connect PGW IP trace callbacks for debugging
-    if (enableTap)
-    {
-        pgwIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&PgwIpRxTrace));
-        pgwIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&PgwIpTxTrace));
-        NS_LOG_UNCOND("PGW IP tracing enabled");
-    }
+    // if (enableTap)
+    // {
+    //     pgwIpv4->TraceConnectWithoutContext("Rx", MakeCallback(&PgwIpRxTrace));
+    //     pgwIpv4->TraceConnectWithoutContext("Tx", MakeCallback(&PgwIpTxTrace));
+    //     NS_LOG_UNCOND("PGW IP tracing enabled");
+    // }
 
     //--------------------------------------------------------------------------
     // Schedule UE position printing
