@@ -1,0 +1,866 @@
+// Copyright (c) 2024
+// SPDX-License-Identifier: GPL-2.0-only
+
+/**
+ * @ingroup examples
+ * @file nr-mec-3gpp-calibration.cc
+ * @brief Mobile Edge Computing (MEC) scenario with 3GPP hexagonal grid topology
+ *
+ * This example combines:
+ * - 3GPP hexagonal grid topology from cttc-nr-3gpp-calibration-ho.cc
+ * - MEC edge server tunneling from nr-mec-handover.cc
+ *
+ * Key features:
+ * - Hexagonal grid deployment with configurable rings (1 ring = 7 sites, 21 cells)
+ * - Triple-sectorized sites (3 sectors per site)
+ * - One edge server per site (shared by all 3 sectors)
+ * - IP-in-UDP tunneling for edge server communication
+ * - Handover prediction and dynamic edge server switching
+ * - Support for linear or random waypoint UE mobility
+ *
+ * Network Topology (1 ring example - 7 sites):
+ *
+ *              Site 2          Site 3
+ *                 \            /
+ *                  \    S1    /
+ *           Site 1  \  /  \  /  Site 4
+ *                    \/    \/
+ *                    /\    /\
+ *           Site 6  /  \  /  \  Site 5
+ *                  /    S0    \
+ *                 /            \
+ *
+ * Each site has 3 sectors, and each site has one edge server.
+ * Intra-site handover: no edge server switch
+ * Inter-site handover: edge server switch triggered
+ */
+
+#include "ns3/antenna-module.h"
+#include "ns3/applications-module.h"
+#include "ns3/buildings-module.h"
+#include "ns3/config-store-module.h"
+#include "ns3/core-module.h"
+#include "ns3/csma-module.h"
+#include "ns3/flow-monitor-module.h"
+#include "ns3/internet-apps-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/mobility-module.h"
+#include "ns3/nr-module.h"
+#include "ns3/point-to-point-module.h"
+#include "ns3/tap-bridge-module.h"
+
+#include "ue-tunnel-app.h"
+#include "edge-tunnel-app.h"
+#include "handover-prediction-file.h"
+
+#include <iomanip>
+#include <map>
+#include <deque>
+
+using namespace ns3;
+
+NS_LOG_COMPONENT_DEFINE("NrMec3gppCalibration");
+
+//==============================================================================
+// Global state for handover prediction and edge server tracking
+//==============================================================================
+
+// Map from gNB cell ID to edge server node
+std::map<uint16_t, Ptr<Node>> g_cellIdToEdgeServer;
+
+// Map from gNB cell ID to edge server IP address
+std::map<uint16_t, Ipv4Address> g_cellIdToEdgeServerIp;
+
+// Map from gNB cell ID to site ID (for determining if edge switch is needed)
+std::map<uint16_t, uint16_t> g_cellIdToSiteId;
+
+// Current serving cell for each UE (for tracking)
+std::map<uint64_t, uint16_t> g_ueCurrentServingCell;
+
+// Structure to store measurement history for prediction
+struct MeasurementHistory
+{
+    Time timestamp;
+    uint16_t cellId;
+    int rsrp;     // in dBm
+    double rsrq;  // in dB
+};
+
+// History of measurements for each cell (for prediction algorithms)
+std::map<uint16_t, std::deque<MeasurementHistory>> g_measurementHistory;
+const size_t MAX_HISTORY_SIZE = 10;
+
+// Global reference to UE tunnel apps for dynamic endpoint switching
+std::map<uint64_t, Ptr<UeTunnelApp>> g_ueTunnelApps;
+
+// Pointer to the scenario helper (for index mapping)
+NodeDistributionScenarioInterface* g_scenario = nullptr;
+
+//==============================================================================
+// Handover Prediction Algorithm (Same as nr-mec-handover.cc)
+//==============================================================================
+
+/**
+ * @brief Calculate RSRP trend using time-based linear regression
+ * @param history Measurement history for a cell
+ * @return Slope in dB/second (positive = improving signal)
+ */
+double
+CalculateRsrpTrend(const std::deque<MeasurementHistory>& history)
+{
+    if (history.size() < 2)
+    {
+        return 0.0;
+    }
+
+    double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    double t0 = history.front().timestamp.GetSeconds();
+
+    for (const auto& meas : history)
+    {
+        double x = meas.timestamp.GetSeconds() - t0;
+        double y = static_cast<double>(meas.rsrp);
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumX2 += x * x;
+    }
+
+    size_t n = history.size();
+    double denom = n * sumX2 - sumX * sumX;
+    if (denom == 0)
+    {
+        return 0.0;
+    }
+
+    return (n * sumXY - sumX * sumY) / denom;  // dB/second
+}
+
+/**
+ * @brief Predict which cell will be the handover target based on RSRP trends
+ * @param currentCellId The current serving cell
+ * @return Predicted target cell ID (0 if no prediction)
+ */
+uint16_t
+PredictHandoverTarget(uint16_t currentCellId)
+{
+    auto servingIt = g_measurementHistory.find(currentCellId);
+    if (servingIt == g_measurementHistory.end() || servingIt->second.empty())
+    {
+        return 0;
+    }
+
+    int servingRsrp = servingIt->second.back().rsrp;
+    const double hysteresis = 3.0;
+
+    uint16_t predictedTarget = 0;
+    double bestScore = -999.0;
+
+    for (const auto& [cellId, history] : g_measurementHistory)
+    {
+        if (cellId == currentCellId || history.size() < 2)
+        {
+            continue;
+        }
+
+        int neighborRsrp = history.back().rsrp;
+        double trend = CalculateRsrpTrend(history);
+        double margin = neighborRsrp - servingRsrp - hysteresis;
+
+        if (margin > -10.0 && (trend > 0 || margin > 0))
+        {
+            double score = margin + trend * 2.0;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                predictedTarget = cellId;
+            }
+        }
+    }
+
+    return predictedTarget;
+}
+
+//==============================================================================
+// Callback Functions for Monitoring
+//==============================================================================
+
+/**
+ * @brief Callback when a measurement report is received at the gNB
+ */
+void
+MeasurementReportCallback(std::string path,
+                          uint64_t imsi,
+                          uint16_t cellId,
+                          uint16_t rnti,
+                          NrRrcSap::MeasurementReport meas)
+{
+    NS_LOG_INFO(Simulator::Now().GetSeconds()
+                << "s [MEAS REPORT] IMSI=" << imsi << " RNTI=" << rnti
+                << " ServingCell=" << cellId);
+
+    int servingRsrp = static_cast<int>(meas.measResults.measResultPCell.rsrpResult) - 140;
+    double servingRsrq = (static_cast<int>(meas.measResults.measResultPCell.rsrqResult) - 40) / 2.0;
+
+    NS_LOG_INFO("  Serving Cell RSRP=" << servingRsrp << " dBm, RSRQ=" << servingRsrq << " dB");
+
+    // Update history for serving cell
+    MeasurementHistory servingMeas{Simulator::Now(), cellId, servingRsrp, servingRsrq};
+    auto& servingHistory = g_measurementHistory[cellId];
+    servingHistory.push_back(servingMeas);
+    if (servingHistory.size() > MAX_HISTORY_SIZE)
+    {
+        servingHistory.pop_front();
+    }
+
+    // Process neighbor cell measurements
+    if (meas.measResults.haveMeasResultNeighCells)
+    {
+        for (const auto& neighbor : meas.measResults.measResultListEutra)
+        {
+            int neighborRsrp = static_cast<int>(neighbor.rsrpResult) - 140;
+            double neighborRsrq = (static_cast<int>(neighbor.rsrqResult) - 40) / 2.0;
+
+            NS_LOG_INFO("  Neighbor Cell " << neighbor.physCellId
+                        << ": RSRP=" << neighborRsrp << " dBm, RSRQ=" << neighborRsrq << " dB");
+
+            MeasurementHistory neighborMeas{Simulator::Now(), neighbor.physCellId, neighborRsrp, neighborRsrq};
+            auto& neighborHistory = g_measurementHistory[neighbor.physCellId];
+            neighborHistory.push_back(neighborMeas);
+            if (neighborHistory.size() > MAX_HISTORY_SIZE)
+            {
+                neighborHistory.pop_front();
+            }
+        }
+    }
+
+    // Run handover prediction
+    uint16_t predictedTarget = PredictHandoverTarget(cellId);
+
+    Ipv4Address targetEdgeIp = Ipv4Address("0.0.0.0");
+    double rsrpTrend = 0.0;
+
+    if (predictedTarget > 0 && g_cellIdToEdgeServerIp.count(predictedTarget) > 0)
+    {
+        targetEdgeIp = g_cellIdToEdgeServerIp[predictedTarget];
+        const auto& history = g_measurementHistory[predictedTarget];
+        rsrpTrend = CalculateRsrpTrend(history);
+
+        // Check if this would be an inter-site handover
+        uint16_t currentSite = g_cellIdToSiteId[cellId];
+        uint16_t targetSite = g_cellIdToSiteId[predictedTarget];
+
+        if (currentSite != targetSite)
+        {
+            NS_LOG_INFO("  [PREDICTION] Inter-site handover to Cell " << predictedTarget
+                        << " (Site " << currentSite << " -> " << targetSite
+                        << ", Edge: " << targetEdgeIp << ")");
+        }
+        else
+        {
+            NS_LOG_INFO("  [PREDICTION] Intra-site handover to Cell " << predictedTarget
+                        << " (same site " << currentSite << ", no edge switch)");
+        }
+    }
+
+    // Update prediction file
+    HandoverPredictionFile::GetInstance().UpdatePrediction(
+        imsi, cellId, predictedTarget, targetEdgeIp, servingRsrp, rsrpTrend);
+}
+
+/**
+ * @brief Callback when handover starts at the UE
+ */
+void
+HandoverStartCallback(std::string path,
+                      uint64_t imsi,
+                      uint16_t sourceCellId,
+                      uint16_t rnti,
+                      uint16_t targetCellId)
+{
+    // Update current serving cell before handover completes
+    // This ensures HandoverEndOkCallback knows the previous cell
+    g_ueCurrentServingCell[imsi] = sourceCellId;
+
+    uint16_t sourceSite = g_cellIdToSiteId.count(sourceCellId) ? g_cellIdToSiteId[sourceCellId] : 0;
+    uint16_t targetSite = g_cellIdToSiteId.count(targetCellId) ? g_cellIdToSiteId[targetCellId] : 0;
+
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [HANDOVER START] IMSI=" << imsi
+                  << " Cell " << sourceCellId << " (Site " << sourceSite << ")"
+                  << " -> Cell " << targetCellId << " (Site " << targetSite << ")");
+
+    if (sourceSite != targetSite)
+    {
+        Ipv4Address sourceEdgeIp = g_cellIdToEdgeServerIp.count(sourceCellId) ?
+            g_cellIdToEdgeServerIp[sourceCellId] : Ipv4Address("0.0.0.0");
+        Ipv4Address targetEdgeIp = g_cellIdToEdgeServerIp.count(targetCellId) ?
+            g_cellIdToEdgeServerIp[targetCellId] : Ipv4Address("0.0.0.0");
+
+        NS_LOG_UNCOND("  Inter-site handover: Edge " << sourceEdgeIp << " -> " << targetEdgeIp);
+    }
+    else
+    {
+        NS_LOG_UNCOND("  Intra-site handover: no edge server switch");
+    }
+}
+
+/**
+ * @brief Callback when handover completes successfully
+ */
+void
+HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t rnti)
+{
+    uint16_t previousCell = g_ueCurrentServingCell.count(imsi) ? g_ueCurrentServingCell[imsi] : 0;
+    uint16_t previousSite = g_cellIdToSiteId.count(previousCell) ? g_cellIdToSiteId[previousCell] : 0;
+    uint16_t newSite = g_cellIdToSiteId.count(cellId) ? g_cellIdToSiteId[cellId] : 0;
+
+    g_ueCurrentServingCell[imsi] = cellId;
+
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [HANDOVER SUCCESS] IMSI=" << imsi
+                  << " New ServingCell=" << cellId << " (Site " << newSite << ")");
+
+    // Only switch tunnel endpoint if this is an inter-site handover
+    if (previousSite != newSite && g_cellIdToEdgeServerIp.count(cellId) > 0)
+    {
+        Ipv4Address newEdgeServerIp = g_cellIdToEdgeServerIp[cellId];
+        NS_LOG_UNCOND("  Switching to Edge Server at " << newEdgeServerIp);
+
+        // Switch tunnel endpoint
+        if (g_ueTunnelApps.count(imsi) > 0 && g_ueTunnelApps[imsi])
+        {
+            g_ueTunnelApps[imsi]->UpdateTunnelEndpoint(newEdgeServerIp);
+        }
+
+        // Write handover event to file
+        Ipv4Address previousEdgeIp = g_cellIdToEdgeServerIp.count(previousCell) ?
+            g_cellIdToEdgeServerIp[previousCell] : Ipv4Address("0.0.0.0");
+        HandoverPredictionFile::GetInstance().WriteHandoverEvent(
+            imsi, previousCell, cellId, previousEdgeIp, newEdgeServerIp, "handover_success");
+    }
+    else
+    {
+        NS_LOG_UNCOND("  Intra-site handover: edge server unchanged");
+    }
+}
+
+/**
+ * @brief Callback when handover fails
+ */
+void
+HandoverEndErrorCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t rnti)
+{
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                  << "s [HANDOVER FAILED] IMSI=" << imsi << " CellId=" << cellId);
+}
+
+/**
+ * @brief Print UE position periodically
+ */
+void
+PrintUePosition(NodeContainer ueNodes)
+{
+    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+    {
+        Ptr<Node> ue = ueNodes.Get(i);
+        Ptr<MobilityModel> mobility = ue->GetObject<MobilityModel>();
+        Vector pos = mobility->GetPosition();
+        Vector vel = mobility->GetVelocity();
+
+        // Get IMSI from the first NR device
+        uint64_t imsi = 0;
+        for (uint32_t d = 0; d < ue->GetNDevices(); ++d)
+        {
+            Ptr<NrUeNetDevice> nrDev = DynamicCast<NrUeNetDevice>(ue->GetDevice(d));
+            if (nrDev)
+            {
+                imsi = nrDev->GetImsi();
+                break;
+            }
+        }
+
+        uint16_t servingCell = g_ueCurrentServingCell.count(imsi) ? g_ueCurrentServingCell[imsi] : 0;
+        uint16_t siteId = g_cellIdToSiteId.count(servingCell) ? g_cellIdToSiteId[servingCell] : 0;
+
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+                      << "s [UE " << i << "] IMSI=" << imsi
+                      << " pos=(" << pos.x << ", " << pos.y << ")"
+                      << " vel=" << vel.GetLength() << " m/s"
+                      << " cell=" << servingCell << " site=" << siteId);
+    }
+
+    Simulator::Schedule(Seconds(10.0), &PrintUePosition, ueNodes);
+}
+
+//==============================================================================
+// Main Function
+//==============================================================================
+
+int
+main(int argc, char* argv[])
+{
+    // Topology parameters
+    uint8_t numRings = 1;                        // Number of hexagonal rings (1 = 7 sites)
+    std::string scenario = "UMa";                // Propagation scenario (UMa, RMa, UMi)
+    double isd = 500.0;                          // Inter-site distance in meters
+    uint32_t numUes = 7;                         // Number of UEs
+    double maxUeDistance = 1000.0;               // Max UE distance to closest site
+
+    // Mobility parameters
+    std::string mobilityModel = "linear";        // linear or random
+    double ueSpeed = 10.0;                       // UE speed in m/s
+    double simTime = 300.0;                      // Simulation time in seconds
+
+    // NR parameters
+    double centralFrequency = 3.5e9;             // 3.5 GHz (n78 band)
+    double bandwidth = 20e6;                     // 20 MHz
+    double gnbTxPower = 43.0;                    // gNB TX power in dBm
+    uint16_t numerology = 1;                     // NR numerology
+
+    // Tap bridge parameters
+    bool enableTap = false;
+    std::string tapUeDevice = "tap_ue";
+    std::string tapEdgePrefix = "tap_edge";
+
+    // Handover prediction
+    std::string predictionFilePath = "/tmp/ns3_handover_3gpp";
+    double predictionWriteIntervalMs = 100.0;
+
+    // Other
+    bool logging = true;
+
+    CommandLine cmd(__FILE__);
+
+    // Topology
+    cmd.AddValue("numRings", "Number of hexagonal rings (0=1 site, 1=7 sites, 2=19 sites)", numRings);
+    cmd.AddValue("scenario", "Propagation scenario (UMa, RMa, UMi)", scenario);
+    cmd.AddValue("isd", "Inter-site distance in meters", isd);
+    cmd.AddValue("numUes", "Number of UEs", numUes);
+    cmd.AddValue("maxUeDistance", "Max UE distance to closest site", maxUeDistance);
+
+    // Mobility
+    cmd.AddValue("mobilityModel", "UE mobility model (linear, random)", mobilityModel);
+    cmd.AddValue("ueSpeed", "UE speed in m/s", ueSpeed);
+    cmd.AddValue("simTime", "Simulation time in seconds", simTime);
+
+    // NR
+    cmd.AddValue("centralFrequency", "Central frequency in Hz", centralFrequency);
+    cmd.AddValue("bandwidth", "System bandwidth in Hz", bandwidth);
+    cmd.AddValue("gnbTxPower", "gNB TX power in dBm", gnbTxPower);
+    cmd.AddValue("numerology", "NR numerology (0-4)", numerology);
+
+    // Tap bridge
+    cmd.AddValue("enableTap", "Enable tap bridge for external connectivity", enableTap);
+    cmd.AddValue("tapUeDevice", "Tap device name prefix for UE", tapUeDevice);
+    cmd.AddValue("tapEdgePrefix", "Tap device name prefix for edge servers", tapEdgePrefix);
+
+    // Handover prediction
+    cmd.AddValue("predictionFilePath", "Path for handover prediction file", predictionFilePath);
+    cmd.AddValue("predictionWriteIntervalMs", "Min interval between prediction writes (ms)", predictionWriteIntervalMs);
+
+    // Other
+    cmd.AddValue("logging", "Enable detailed logging", logging);
+
+    cmd.Parse(argc, argv);
+
+    // Initialize handover prediction file system
+    HandoverPredictionFile::GetInstance().Initialize(
+        predictionFilePath,
+        MilliSeconds(predictionWriteIntervalMs));
+
+    // Configure real-time simulator when tap bridge is enabled
+    if (enableTap)
+    {
+        GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
+        GlobalValue::Bind("ChecksumEnabled", BooleanValue(true));
+    }
+
+    if (logging)
+    {
+        LogComponentEnable("NrMec3gppCalibration", LOG_LEVEL_INFO);
+    }
+
+    NS_LOG_INFO("==============================================");
+    NS_LOG_INFO("NR MEC 3GPP Calibration Simulation");
+    NS_LOG_INFO("==============================================");
+    NS_LOG_INFO("Rings: " << (int)numRings << " (" << (numRings == 0 ? 1 : (numRings == 1 ? 7 : 19)) << " sites)");
+    NS_LOG_INFO("Scenario: " << scenario);
+    NS_LOG_INFO("ISD: " << isd << " m");
+    NS_LOG_INFO("UEs: " << numUes);
+    NS_LOG_INFO("Mobility: " << mobilityModel << " at " << ueSpeed << " m/s");
+    NS_LOG_INFO("==============================================");
+
+    //--------------------------------------------------------------------------
+    // Create hexagonal grid topology
+    //--------------------------------------------------------------------------
+    ScenarioParameters scenarioParams;
+    scenarioParams.SetScenarioParameters(scenario);
+    scenarioParams.m_isd = isd;
+    scenarioParams.SetSectorization(3);  // Triple-sectorized
+
+    HexagonalGridScenarioHelper gridScenario;
+    gridScenario.SetScenarioParameters(scenarioParams);
+    gridScenario.SetNumRings(numRings);
+    gridScenario.SetUtNumber(numUes);
+    gridScenario.SetMaxUeDistanceToClosestSite(maxUeDistance);
+
+    if (mobilityModel == "linear")
+    {
+        gridScenario.CreateScenarioWithMobility(Vector(ueSpeed, 0, 0), 0.0);
+    }
+    else
+    {
+        // For random waypoint, first create static scenario
+        gridScenario.CreateScenario();
+
+        // Then install random waypoint mobility on UEs
+        NodeContainer ueNodes = gridScenario.GetUserTerminals();
+        MobilityHelper mobilityHelper;
+
+        // Calculate bounds based on grid size
+        double gridRadius = isd * (numRings + 1);
+        Ptr<RandomBoxPositionAllocator> posAlloc = CreateObject<RandomBoxPositionAllocator>();
+        posAlloc->SetAttribute("X", StringValue("ns3::UniformRandomVariable[Min=-" +
+            std::to_string(gridRadius) + "|Max=" + std::to_string(gridRadius) + "]"));
+        posAlloc->SetAttribute("Y", StringValue("ns3::UniformRandomVariable[Min=-" +
+            std::to_string(gridRadius) + "|Max=" + std::to_string(gridRadius) + "]"));
+        posAlloc->SetAttribute("Z", StringValue("ns3::ConstantRandomVariable[Constant=1.5]"));
+
+        mobilityHelper.SetPositionAllocator(posAlloc);
+        mobilityHelper.SetMobilityModel("ns3::RandomWaypointMobilityModel",
+            "Speed", StringValue("ns3::ConstantRandomVariable[Constant=" + std::to_string(ueSpeed) + "]"),
+            "Pause", StringValue("ns3::ConstantRandomVariable[Constant=0]"),
+            "PositionAllocator", PointerValue(posAlloc));
+
+        mobilityHelper.Install(ueNodes);
+    }
+
+    NodeContainer gnbNodes = gridScenario.GetBaseStations();
+    NodeContainer ueNodes = gridScenario.GetUserTerminals();
+    uint32_t numSites = gridScenario.GetNumSites();
+    uint32_t numCells = gnbNodes.GetN();
+
+    g_scenario = &gridScenario;
+
+    NS_LOG_INFO("Created " << numSites << " sites with " << numCells << " cells");
+    NS_LOG_INFO("Created " << ueNodes.GetN() << " UEs");
+
+    //--------------------------------------------------------------------------
+    // Set up NR network
+    //--------------------------------------------------------------------------
+    Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
+    Ptr<IdealBeamformingHelper> idealBeamformingHelper = CreateObject<IdealBeamformingHelper>();
+    Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
+
+    nrHelper->SetBeamformingHelper(idealBeamformingHelper);
+    nrHelper->SetEpcHelper(epcHelper);
+
+    // Configure handover algorithm
+    nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
+    nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(3.0));
+    nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(256)));
+
+    // Spectrum configuration (single band, overlapping)
+    BandwidthPartInfoPtrVector allBwps;
+    CcBwpCreator ccBwpCreator;
+    CcBwpCreator::SimpleOperationBandConf bandConf(centralFrequency, bandwidth, 1);
+    OperationBandInfo band = ccBwpCreator.CreateOperationBandContiguousCc(bandConf);
+
+    // Channel model
+    Ptr<NrChannelHelper> channelHelper = CreateObject<NrChannelHelper>();
+    channelHelper->ConfigureFactories(scenario, "Default", "ThreeGpp");
+    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
+    channelHelper->AssignChannelsToBands({band});
+    allBwps = CcBwpCreator::GetAllBwps({band});
+
+    // Configure antennas
+    nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(4));
+    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(8));
+    nrHelper->SetGnbAntennaAttribute("AntennaElement",
+                                     PointerValue(CreateObject<ThreeGppAntennaModel>()));
+
+    nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(2));
+    nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(4));
+    nrHelper->SetUeAntennaAttribute("AntennaElement",
+                                    PointerValue(CreateObject<IsotropicAntennaModel>()));
+
+    // Beamforming
+    idealBeamformingHelper->SetAttribute("BeamformingMethod",
+                                         TypeIdValue(CellScanBeamforming::GetTypeId()));
+
+    // Install NR devices
+    NetDeviceContainer gnbNetDevs = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
+    NetDeviceContainer ueNetDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
+
+    // Configure gNB TX power and numerology
+    for (uint32_t i = 0; i < gnbNetDevs.GetN(); ++i)
+    {
+        nrHelper->GetGnbPhy(gnbNetDevs.Get(i), 0)->SetAttribute("Numerology", UintegerValue(numerology));
+        nrHelper->GetGnbPhy(gnbNetDevs.Get(i), 0)->SetAttribute("TxPower", DoubleValue(gnbTxPower));
+    }
+
+    //--------------------------------------------------------------------------
+    // Build cell ID to site ID mapping
+    //--------------------------------------------------------------------------
+    for (uint32_t cellId = 0; cellId < numCells; ++cellId)
+    {
+        uint16_t siteId = gridScenario.GetSiteIndex(cellId);
+        g_cellIdToSiteId[cellId] = siteId;
+
+        // Get actual cell ID from the device
+        Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(cellId)->GetObject<NrGnbNetDevice>();
+        uint16_t actualCellId = gnbNetDevice->GetCellId();
+        g_cellIdToSiteId[actualCellId] = siteId;
+
+        NS_LOG_INFO("Cell " << cellId << " (actualCellId=" << actualCellId << ") -> Site " << siteId);
+    }
+
+    //--------------------------------------------------------------------------
+    // Set up IP networking for UEs
+    //--------------------------------------------------------------------------
+    InternetStackHelper internet;
+    internet.Install(ueNodes);
+
+    Ipv4InterfaceContainer ueIpIfaces = epcHelper->AssignUeIpv4Address(ueNetDevs);
+
+    // Set default route for UEs
+    Ipv4StaticRoutingHelper ipv4RoutingHelper;
+    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+    {
+        Ptr<Ipv4StaticRouting> ueStaticRouting =
+            ipv4RoutingHelper.GetStaticRouting(ueNodes.Get(i)->GetObject<Ipv4>());
+        ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
+    }
+
+    //--------------------------------------------------------------------------
+    // Set up edge servers (one per site)
+    //--------------------------------------------------------------------------
+    Ptr<Node> pgw = epcHelper->GetPgwNode();
+
+    NodeContainer edgeServerNodes;
+    edgeServerNodes.Create(numSites);
+    NodeContainer ghostNodes;
+    ghostNodes.Create(numSites);
+
+    internet.Install(edgeServerNodes);
+    // Ghost nodes don't need IP stack - they're pure L2 bridges
+
+    std::vector<Ptr<NetDevice>> edgeServerOuterDevices;
+    std::vector<Ptr<NetDevice>> edgeServerInnerDevices;
+    std::vector<Ptr<NetDevice>> ghostDevices;
+
+    for (uint32_t siteId = 0; siteId < numSites; ++siteId)
+    {
+        CsmaHelper csma;
+        csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
+        csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(10)));
+
+        //----------------------------------------------------------------------
+        // CSMA1: PGW <-> EdgeServer
+        //----------------------------------------------------------------------
+        NodeContainer pgwEdgeLink;
+        pgwEdgeLink.Add(pgw);
+        pgwEdgeLink.Add(edgeServerNodes.Get(siteId));
+
+        NetDeviceContainer pgwEdgeDevices = csma.Install(pgwEdgeLink);
+
+        // IP: 10.{siteId+1}.0.0/24
+        std::ostringstream subnet;
+        subnet << "10." << (siteId + 1) << ".0.0";
+        Ipv4AddressHelper ipv4Helper;
+        ipv4Helper.SetBase(subnet.str().c_str(), "255.255.255.0");
+
+        Ipv4InterfaceContainer pgwEdgeIpIfaces = ipv4Helper.Assign(pgwEdgeDevices);
+        Ipv4Address edgeServerIp = pgwEdgeIpIfaces.GetAddress(1);
+
+        edgeServerOuterDevices.push_back(pgwEdgeDevices.Get(1));
+
+        //----------------------------------------------------------------------
+        // CSMA2: EdgeServer <-> GhostNode (for tap bridge)
+        //----------------------------------------------------------------------
+        NodeContainer edgeGhostLink;
+        edgeGhostLink.Add(edgeServerNodes.Get(siteId));
+        edgeGhostLink.Add(ghostNodes.Get(siteId));
+
+        NetDeviceContainer edgeGhostDevices = csma.Install(edgeGhostLink);
+
+        // IP: 10.{siteId+1}.1.0/24 for EdgeServer only
+        std::ostringstream ghostSubnet;
+        ghostSubnet << "10." << (siteId + 1) << ".1.0";
+        Ipv4AddressHelper ghostIpHelper;
+        ghostIpHelper.SetBase(ghostSubnet.str().c_str(), "255.255.255.0");
+
+        ghostIpHelper.Assign(edgeGhostDevices.Get(0));  // EdgeServer only
+
+        edgeServerInnerDevices.push_back(edgeGhostDevices.Get(0));
+        ghostDevices.push_back(edgeGhostDevices.Get(1));
+
+        // Set up routing from edge server to UE network (via PGW)
+        Ptr<Ipv4StaticRouting> edgeRouting =
+            ipv4RoutingHelper.GetStaticRouting(edgeServerNodes.Get(siteId)->GetObject<Ipv4>());
+        edgeRouting->SetDefaultRoute(pgwEdgeIpIfaces.GetAddress(0), 1);
+
+        // Add route on PGW for ghost segment
+        Ptr<Ipv4StaticRouting> pgwRouting =
+            ipv4RoutingHelper.GetStaticRouting(pgw->GetObject<Ipv4>());
+        pgwRouting->AddNetworkRouteTo(
+            Ipv4Address(ghostSubnet.str().c_str()),
+            Ipv4Mask("255.255.255.0"),
+            pgwEdgeIpIfaces.GetAddress(1),
+            pgw->GetObject<Ipv4>()->GetInterfaceForAddress(pgwEdgeIpIfaces.GetAddress(0))
+        );
+
+        // Map ALL cells of this site to this edge server
+        for (uint32_t sector = 0; sector < 3; ++sector)
+        {
+            uint32_t cellId = siteId * 3 + sector;
+            if (cellId < numCells)
+            {
+                g_cellIdToEdgeServer[cellId] = edgeServerNodes.Get(siteId);
+                g_cellIdToEdgeServerIp[cellId] = edgeServerIp;
+
+                // Also map by actual cell ID
+                Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(cellId)->GetObject<NrGnbNetDevice>();
+                uint16_t actualCellId = gnbNetDevice->GetCellId();
+                g_cellIdToEdgeServer[actualCellId] = edgeServerNodes.Get(siteId);
+                g_cellIdToEdgeServerIp[actualCellId] = edgeServerIp;
+            }
+        }
+
+        NS_LOG_INFO("Edge Server " << siteId << " (IP: " << edgeServerIp
+                    << ") serves Site " << siteId << " (cells "
+                    << siteId * 3 << "-" << std::min(siteId * 3 + 2, numCells - 1) << ")");
+    }
+
+    //--------------------------------------------------------------------------
+    // Install tap bridges (if enabled)
+    //--------------------------------------------------------------------------
+    if (enableTap)
+    {
+        TapBridgeHelper tapBridge;
+        tapBridge.SetAttribute("Mode", StringValue("UseBridge"));
+
+        for (uint32_t siteId = 0; siteId < numSites; ++siteId)
+        {
+            std::string tapDeviceName = tapEdgePrefix + std::to_string(siteId);
+            tapBridge.SetAttribute("DeviceName", StringValue(tapDeviceName));
+            tapBridge.Install(ghostNodes.Get(siteId), ghostDevices[siteId]);
+            NS_LOG_UNCOND("Tap bridge installed on Ghost Node " << siteId << " (" << tapDeviceName << ")");
+        }
+    }
+
+    //--------------------------------------------------------------------------
+    // Attach UEs to closest gNB
+    //--------------------------------------------------------------------------
+    nrHelper->AttachToClosestGnb(ueNetDevs, gnbNetDevs);
+
+    // Initialize serving cell tracking
+    for (uint32_t i = 0; i < ueNetDevs.GetN(); ++i)
+    {
+        Ptr<NrUeNetDevice> ueDev = ueNetDevs.Get(i)->GetObject<NrUeNetDevice>();
+        uint64_t imsi = ueDev->GetImsi();
+        // Cell ID will be set after attachment completes
+        g_ueCurrentServingCell[imsi] = 0;
+    }
+
+    //--------------------------------------------------------------------------
+    // Add X2 interfaces between all gNBs for handover
+    //--------------------------------------------------------------------------
+    nrHelper->AddX2Interface(gnbNodes);
+
+    //--------------------------------------------------------------------------
+    // Configure measurement reporting
+    //--------------------------------------------------------------------------
+
+    // A3 event for early detection (large negative offset)
+    NrRrcSap::ReportConfigEutra reportConfigA3Early;
+    reportConfigA3Early.triggerType = NrRrcSap::ReportConfigEutra::EVENT;
+    reportConfigA3Early.eventId = NrRrcSap::ReportConfigEutra::EVENT_A3;
+    reportConfigA3Early.a3Offset = -30;  // -15 dB for early detection
+    reportConfigA3Early.hysteresis = 0;
+    reportConfigA3Early.timeToTrigger = 0;
+    reportConfigA3Early.reportOnLeave = false;
+    reportConfigA3Early.triggerQuantity = NrRrcSap::ReportConfigEutra::RSRP;
+    reportConfigA3Early.reportQuantity = NrRrcSap::ReportConfigEutra::BOTH;
+    reportConfigA3Early.maxReportCells = 8;
+    reportConfigA3Early.reportInterval = NrRrcSap::ReportConfigEutra::MS480;
+
+    // Standard A3 event for handover
+    NrRrcSap::ReportConfigEutra reportConfigA3;
+    reportConfigA3.triggerType = NrRrcSap::ReportConfigEutra::EVENT;
+    reportConfigA3.eventId = NrRrcSap::ReportConfigEutra::EVENT_A3;
+    reportConfigA3.a3Offset = 0;
+    reportConfigA3.hysteresis = 6;  // 3 dB
+    reportConfigA3.timeToTrigger = 256;
+    reportConfigA3.reportOnLeave = false;
+    reportConfigA3.triggerQuantity = NrRrcSap::ReportConfigEutra::RSRP;
+    reportConfigA3.reportQuantity = NrRrcSap::ReportConfigEutra::BOTH;
+    reportConfigA3.maxReportCells = 8;
+    reportConfigA3.reportInterval = NrRrcSap::ReportConfigEutra::MS480;
+
+    // Add measurement configs to all gNBs
+    for (uint32_t i = 0; i < gnbNodes.GetN(); ++i)
+    {
+        Ptr<NrGnbRrc> gnbRrc = gnbNodes.Get(i)->GetDevice(0)->GetObject<NrGnbNetDevice>()->GetRrc();
+        gnbRrc->AddUeMeasReportConfig(reportConfigA3Early);
+        gnbRrc->AddUeMeasReportConfig(reportConfigA3);
+    }
+
+    //--------------------------------------------------------------------------
+    // Connect trace sources
+    //--------------------------------------------------------------------------
+
+    // Measurement report callback to all gNBs
+    for (uint32_t i = 0; i < gnbNodes.GetN(); ++i)
+    {
+        std::ostringstream path;
+        path << "/NodeList/" << gnbNodes.Get(i)->GetId()
+             << "/DeviceList/0/NrGnbRrc/RecvMeasurementReport";
+        Config::Connect(path.str(), MakeCallback(&MeasurementReportCallback));
+    }
+
+    // Handover callbacks to UEs
+    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+    {
+        std::ostringstream uePath;
+        uePath << "/NodeList/" << ueNodes.Get(i)->GetId() << "/DeviceList/0/NrUeRrc/";
+
+        Config::Connect(uePath.str() + "HandoverStart", MakeCallback(&HandoverStartCallback));
+        Config::Connect(uePath.str() + "HandoverEndOk", MakeCallback(&HandoverEndOkCallback));
+        Config::Connect(uePath.str() + "HandoverEndError", MakeCallback(&HandoverEndErrorCallback));
+    }
+
+    //--------------------------------------------------------------------------
+    // Schedule UE position printing
+    //--------------------------------------------------------------------------
+    Simulator::Schedule(Seconds(10.0), &PrintUePosition, ueNodes);
+
+    //--------------------------------------------------------------------------
+    // Print summary
+    //--------------------------------------------------------------------------
+    NS_LOG_UNCOND("\n==============================================");
+    NS_LOG_UNCOND("Network Summary:");
+    NS_LOG_UNCOND("  Sites: " << numSites);
+    NS_LOG_UNCOND("  Cells: " << numCells);
+    NS_LOG_UNCOND("  Edge Servers: " << numSites << " (one per site)");
+    NS_LOG_UNCOND("  UEs: " << ueNodes.GetN());
+    NS_LOG_UNCOND("==============================================\n");
+
+    //--------------------------------------------------------------------------
+    // Run simulation
+    //--------------------------------------------------------------------------
+    NS_LOG_INFO("Starting simulation...");
+    Simulator::Stop(Seconds(simTime));
+    Simulator::Run();
+
+    //--------------------------------------------------------------------------
+    // Print final statistics
+    //--------------------------------------------------------------------------
+    NS_LOG_UNCOND("\n==============================================");
+    NS_LOG_UNCOND("Simulation Complete");
+    NS_LOG_UNCOND("==============================================");
+
+    Simulator::Destroy();
+    return 0;
+}

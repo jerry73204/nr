@@ -50,6 +50,16 @@ build_lib_example(
 )
 
 build_lib_example(
+  NAME nr-mec-3gpp-calibration
+  SOURCE_FILES nr-mec-3gpp-calibration.cc
+               ue-tunnel-app.cc
+               edge-tunnel-app.cc
+  LIBRARIES_TO_LINK ${libnr}
+                    ${libflow-monitor}
+                    ${libtap-bridge}
+)
+
+build_lib_example(
   NAME cttc-fh-compression
   SOURCE_FILES cttc-fh-compression.cc
   LIBRARIES_TO_LINK ${libnr}
