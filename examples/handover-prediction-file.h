@@ -124,7 +124,7 @@ public:
         Time now = Simulator::Now();
 
         // Skip if prediction hasn't changed AND minimum interval hasn't elapsed
-        bool predictionChanged = (predictedTarget != m_lastPredictedTarget);
+        bool predictionChanged = (predictedTarget != m_lastPredictedTarget) && (predictedTarget != 0);
         bool intervalElapsed = (now - m_lastWriteTime) >= m_minWriteInterval;
 
         if (!predictionChanged && !intervalElapsed)

@@ -87,43 +87,112 @@ Ptr<UeTunnelApp> g_ueTunnelApp = nullptr;
 //==============================================================================
 
 /**
+ * @brief Calculate RSRP trend using time-based linear regression
+ * @param history Measurement history for a cell
+ * @return Slope in dB/second (positive = improving signal)
+ */
+double
+CalculateRsrpTrend(const std::deque<MeasurementHistory>& history)
+{
+    if (history.size() < 2)
+    {
+        return 0.0;
+    }
+
+    // Use actual timestamps for X-axis (more accurate than index-based)
+    double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    double t0 = history.front().timestamp.GetSeconds();
+
+    for (const auto& meas : history)
+    {
+        double x = meas.timestamp.GetSeconds() - t0;
+        double y = static_cast<double>(meas.rsrp);
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumX2 += x * x;
+    }
+
+    size_t n = history.size();
+    double denom = n * sumX2 - sumX * sumX;
+    if (denom == 0)
+    {
+        return 0.0;
+    }
+
+    return (n * sumXY - sumX * sumY) / denom;  // dB/second
+}
+
+/**
  * @brief Predict which cell will be the handover target based on RSRP trends
+ *
+ * Improved algorithm that:
+ * 1. Uses time-based trend calculation instead of index-based
+ * 2. Compares neighbor RSRP against serving cell (like A3 handover condition)
+ * 3. Requires only 2 measurements instead of 3 for faster prediction
+ *
  * @param currentCellId The current serving cell
  * @return Predicted target cell ID (0 if no prediction)
  */
 uint16_t
 PredictHandoverTarget(uint16_t currentCellId)
 {
+    // Get serving cell's latest RSRP for comparison
+    auto servingIt = g_measurementHistory.find(currentCellId);
+    if (servingIt == g_measurementHistory.end() || servingIt->second.empty())
+    {
+        NS_LOG_DEBUG("  [PREDICT] No serving cell history");
+        return 0;
+    }
+
+    int servingRsrp = servingIt->second.back().rsrp;
+    const double hysteresis = 3.0;  // Match A3 handover algorithm config
+
     uint16_t predictedTarget = 0;
-    double bestTrend = 0.0;
+    double bestScore = -999.0;  // Combined score of margin + trend
+
+    NS_LOG_DEBUG("  [PREDICT] Serving cell " << currentCellId << " RSRP=" << servingRsrp);
 
     for (const auto& [cellId, history] : g_measurementHistory)
     {
-        if (cellId == currentCellId || history.size() < 3)
+        if (cellId == currentCellId || history.size() < 2)
         {
             continue;
         }
 
-        // Calculate RSRP trend (simple linear regression slope)
-        double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-        size_t n = history.size();
-        for (size_t i = 0; i < n; ++i)
-        {
-            double x = static_cast<double>(i);
-            double y = static_cast<double>(history[i].rsrp);
-            sumX += x;
-            sumY += y;
-            sumXY += x * y;
-            sumX2 += x * x;
-        }
-        double slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+        int neighborRsrp = history.back().rsrp;
+        double trend = CalculateRsrpTrend(history);
 
-        // Positive slope means improving signal - potential handover target
-        if (slope > bestTrend && history.back().rsrp > -100)  // Also check current RSRP is reasonable
+        // Calculate margin relative to A3 handover threshold
+        // A3 triggers when: neighbor > serving + hysteresis
+        // margin > 0 means handover would trigger now
+        double margin = neighborRsrp - servingRsrp - hysteresis;
+
+        NS_LOG_DEBUG("  [PREDICT] Neighbor cell " << cellId
+                     << ": RSRP=" << neighborRsrp
+                     << ", margin=" << margin
+                     << ", trend=" << trend << " dB/s"
+                     << ", history=" << history.size());
+
+        // Predict handover if:
+        // 1. Neighbor is within 10 dB of handover threshold (margin > -10), AND
+        // 2. Signal is improving (trend > 0), OR already above threshold (margin > 0)
+        if (margin > -10.0 && (trend > 0 || margin > 0))
         {
-            bestTrend = slope;
-            predictedTarget = cellId;
+            // Score combines how close to threshold + improvement rate
+            double score = margin + trend * 2.0;  // Weight trend more
+            if (score > bestScore)
+            {
+                bestScore = score;
+                predictedTarget = cellId;
+            }
         }
+    }
+
+    if (predictedTarget > 0)
+    {
+        NS_LOG_DEBUG("  [PREDICT] Predicted target: cell " << predictedTarget
+                     << " (score=" << bestScore << ")");
     }
 
     return predictedTarget;
@@ -321,6 +390,7 @@ MeasurementReportCallback(std::string path,
     // Process neighbor cell measurements
     if (meas.measResults.haveMeasResultNeighCells)
     {
+        NS_LOG_INFO("  Processing " << meas.measResults.measResultListEutra.size() << " neighbor cells");
         for (const auto& neighbor : meas.measResults.measResultListEutra)
         {
             int neighborRsrp = static_cast<int>(neighbor.rsrpResult) - 140;
@@ -339,6 +409,10 @@ MeasurementReportCallback(std::string path,
             }
         }
     }
+    else
+    {
+        NS_LOG_INFO("  No neighbor cell measurements reported");
+    }
 
     // Run handover prediction
     uint16_t predictedTarget = PredictHandoverTarget(cellId);
@@ -351,16 +425,16 @@ MeasurementReportCallback(std::string path,
     {
         targetEdgeIp = g_cellIdToEdgeServerIp[predictedTarget];
 
-        // Calculate trend from history if available
+        // Calculate trend using time-based regression (more accurate)
         const auto& history = g_measurementHistory[predictedTarget];
-        if (history.size() >= 2)
-        {
-            rsrpTrend = static_cast<double>(history.back().rsrp - history.front().rsrp)
-                        / static_cast<double>(history.size() - 1);
-        }
+        rsrpTrend = CalculateRsrpTrend(history);
 
         NS_LOG_INFO("  [PREDICTION] Handover likely to Cell " << predictedTarget
-                    << " (Edge: " << targetEdgeIp << ", trend: " << rsrpTrend << " dB/meas)");
+                    << " (Edge: " << targetEdgeIp << ", trend: " << rsrpTrend << " dB/s)");
+    }
+    else
+    {
+        NS_LOG_INFO("  [PREDICTION] No handover predicted (target=" << predictedTarget << ")");
     }
 
     // Update prediction file (low overhead - only writes on change)
@@ -400,8 +474,8 @@ HandoverStartCallback(std::string path,
     }
 
     // Write handover start event to file
-    HandoverPredictionFile::GetInstance().WriteHandoverEvent(
-        imsi, sourceCellId, targetCellId, sourceEdgeIp, targetEdgeIp, "handover_start");
+    // HandoverPredictionFile::GetInstance().WriteHandoverEvent(
+    //     imsi, sourceCellId, targetCellId, sourceEdgeIp, targetEdgeIp, "handover_start");
 }
 
 /**
@@ -482,8 +556,8 @@ main(int argc, char* argv[])
     double gnbSpacing = 500.0;               // Distance between gNBs in meters
     double simTime = 3000.0;                   // Simulation time in seconds
     // double ueSpeed = 20.0;                   // UE speed in m/s (72 km/h)
-    double ueSpeed = 2;
-    double ueStartX = 50.0;                  // UE starting X position (near first gNB for stable attachment)
+    double ueSpeed = 10;
+    double ueStartX = 0.0;                  // UE starting X position (near first gNB for stable attachment)
     bool logging = true;                     // Enable detailed logging
     std::string handoverAlgo = "A3Rsrp";     // Handover algorithm: A3Rsrp or A2A4Rsrq
 
@@ -615,11 +689,14 @@ main(int argc, char* argv[])
     nrHelper->SetEpcHelper(epcHelper);
 
     // Configure handover algorithm
+    // Balance between early handover and ping-pong prevention:
+    // - Moderate hysteresis (2.0 dB) prevents ping-pong from shadowing variations
+    // - Short time-to-trigger (128 ms) for reasonably fast handover
     if (handoverAlgo == "A3Rsrp")
     {
         nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
-        nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(3.0));
-        nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(256)));
+        nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(2.0));
+        nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(128)));
     }
     else if (handoverAlgo == "A2A4Rsrq")
     {
@@ -1012,7 +1089,23 @@ main(int argc, char* argv[])
     // Configure measurement reporting for handover
     //--------------------------------------------------------------------------
 
-    // Configure A3 event (neighbor better than serving by offset)
+    // Configure A3 event for EARLY detection (large negative offset)
+    // This triggers when neighbor is 15 dB WEAKER than serving, giving us
+    // time to build measurement history for prediction before actual handover
+    // a3Offset is in 0.5 dB steps, so -30 = -15 dB
+    NrRrcSap::ReportConfigEutra reportConfigA3Early;
+    reportConfigA3Early.triggerType = NrRrcSap::ReportConfigEutra::EVENT;
+    reportConfigA3Early.eventId = NrRrcSap::ReportConfigEutra::EVENT_A3;
+    reportConfigA3Early.a3Offset = -30;  // -15 dB offset (triggers early)
+    reportConfigA3Early.hysteresis = 0;
+    reportConfigA3Early.timeToTrigger = 0;  // Immediate trigger
+    reportConfigA3Early.reportOnLeave = false;
+    reportConfigA3Early.triggerQuantity = NrRrcSap::ReportConfigEutra::RSRP;
+    reportConfigA3Early.reportQuantity = NrRrcSap::ReportConfigEutra::BOTH;
+    reportConfigA3Early.maxReportCells = 8;
+    reportConfigA3Early.reportInterval = NrRrcSap::ReportConfigEutra::MS480;  // Same as standard A3
+
+    // Configure A3 event for actual handover decision (standard parameters)
     NrRrcSap::ReportConfigEutra reportConfigA3;
     reportConfigA3.triggerType = NrRrcSap::ReportConfigEutra::EVENT;
     reportConfigA3.eventId = NrRrcSap::ReportConfigEutra::EVENT_A3;
@@ -1025,11 +1118,12 @@ main(int argc, char* argv[])
     reportConfigA3.maxReportCells = 8;
     reportConfigA3.reportInterval = NrRrcSap::ReportConfigEutra::MS480;
 
-    // Add measurement config to all gNBs
+    // Add measurement configs to all gNBs
     for (uint32_t i = 0; i < gnbNodes.GetN(); ++i)
     {
         Ptr<NrGnbRrc> gnbRrc = gnbNodes.Get(i)->GetDevice(0)->GetObject<NrGnbNetDevice>()->GetRrc();
-        gnbRrc->AddUeMeasReportConfig(reportConfigA3);
+        gnbRrc->AddUeMeasReportConfig(reportConfigA3Early);  // Early detection for prediction
+        gnbRrc->AddUeMeasReportConfig(reportConfigA3);       // Standard A3 for handover
     }
 
     //--------------------------------------------------------------------------
