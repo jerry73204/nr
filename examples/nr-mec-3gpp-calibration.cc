@@ -18,17 +18,23 @@
  * - Handover prediction and dynamic edge server switching
  * - Support for linear or random waypoint UE mobility
  *
- * Network Topology (1 ring example - 7 sites):
+ * Network Topology (1 ring example - 7 sites, ISD=500m):
  *
- *              Site 2          Site 3
- *                 \            /
- *                  \    S1    /
- *           Site 1  \  /  \  /  Site 4
- *                    \/    \/
- *                    /\    /\
- *           Site 6  /  \  /  \  Site 5
- *                  /    S0    \
- *                 /            \
+ *                    Site 2
+ *                   (0, 500)
+ *                    /    \
+ *       Site 3      /      \      Site 1
+ *    (-433, 250)   /        \   (433, 250)
+ *                 /          \
+ *                /   Site 0   \
+ *               /    (0, 0)    \
+ *               \              /
+ *    Site 4      \            /      Site 6
+ *  (-433, -250)   \          /    (433, -250)
+ *                  \        /
+ *                   \      /
+ *                    Site 5
+ *                  (0, -500)
  *
  * Each site has 3 sectors, and each site has one edge server.
  * Intra-site handover: no edge server switch
@@ -404,7 +410,7 @@ main(int argc, char* argv[])
     uint8_t numRings = 1;                        // Number of hexagonal rings (1 = 7 sites)
     std::string scenario = "UMa";                // Propagation scenario (UMa, RMa, UMi)
     double isd = 500.0;                          // Inter-site distance in meters
-    uint32_t numUes = 7;                         // Number of UEs
+    uint32_t numUes = 1;                         // Number of UEs
     double maxUeDistance = 1000.0;               // Max UE distance to closest site
 
     // Mobility parameters
@@ -420,11 +426,11 @@ main(int argc, char* argv[])
 
     // Tap bridge parameters
     bool enableTap = false;
-    std::string tapUeDevice = "tap_ue";
+    std::string tapUeDevice = "tap_z_pre_sub";
     std::string tapEdgePrefix = "tap_edge";
 
     // Handover prediction
-    std::string predictionFilePath = "/tmp/ns3_handover_3gpp";
+    std::string predictionFilePath = "/tmp/ns3_handover/ns3_handover";
     double predictionWriteIntervalMs = 100.0;
 
     // Other
@@ -545,6 +551,45 @@ main(int argc, char* argv[])
 
     NS_LOG_INFO("Created " << numSites << " sites with " << numCells << " cells");
     NS_LOG_INFO("Created " << ueNodes.GetN() << " UEs");
+
+    // Place first UE (with tap bridge) near the center so it attaches to middle base station (Site 0)
+    // Site 0 is at the center of the hexagonal grid at position (0, 0)
+    //
+    // Hexagonal grid sector antenna orientations (TRIPLE sectorization):
+    //   Sector 0: 30°  (pointing +X, slightly +Y)
+    //   Sector 1: 150° (pointing -X, slightly +Y)
+    //   Sector 2: 270° (pointing -Y)
+    //
+    // Site positions (1 ring, ISD=500m):
+    //   Site 0: (0, 0)         - center
+    //   Site 1: (433, 250)     - upper right
+    //   Site 2: (0, 500)       - top
+    //   Site 3: (-433, 250)    - upper left
+    //   Site 4: (-433, -250)   - lower left
+    //   Site 5: (0, -500)      - bottom
+    //   Site 6: (433, -250)    - lower right
+    //
+    // To trigger inter-site handover, the UE must move into a neighboring site's sector coverage.
+    // Site 6 is at (433, -250) and its Sector 0 points at 30°, covering the +X+Y direction.
+    // Moving the UE from (50, 0) along +X direction will eventually enter Site 6's Sector 0 coverage.
+    //
+    // Alternative: Move toward Site 2 (at top, 0, 500) by going +Y direction.
+    // Site 2's Sector 2 points at 270° (downward), covering the area below Site 2.
+    if (ueNodes.GetN() > 0 && mobilityModel == "linear")
+    {
+        Ptr<ConstantVelocityMobilityModel> firstUeMobility =
+            ueNodes.Get(0)->GetObject<ConstantVelocityMobilityModel>();
+        if (firstUeMobility)
+        {
+            // Start slightly offset from center, move toward Site 2 (at 0, 500)
+            // This will enter Site 2's Sector 2 (pointing 270°, i.e., downward)
+            firstUeMobility->SetPosition(Vector(0.0, 50.0, 1.5));
+            // Move purely in +Y direction toward Site 2
+            firstUeMobility->SetVelocity(Vector(0.0, ueSpeed, 0.0));
+            NS_LOG_INFO("First UE positioned at (0, 50, 1.5) moving toward Site 2 at "
+                        << ueSpeed << " m/s (vx=0, vy=" << ueSpeed << ")");
+        }
+    }
 
     //--------------------------------------------------------------------------
     // Set up NR network
@@ -736,17 +781,164 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     // Install tap bridges (if enabled)
     //--------------------------------------------------------------------------
+    // Store UE's inner CSMA device for tunnel app (needs to be accessible later)
+    Ptr<NetDevice> ueInnerCsmaDevice = nullptr;
+    Ipv4Address ueIpAddr = ueIpIfaces.GetAddress(0);  // Store first UE's NR IP for tunnel
+
     if (enableTap)
     {
         TapBridgeHelper tapBridge;
         tapBridge.SetAttribute("Mode", StringValue("UseBridge"));
 
+        // Install tap bridges on edge server ghost nodes
         for (uint32_t siteId = 0; siteId < numSites; ++siteId)
         {
             std::string tapDeviceName = tapEdgePrefix + std::to_string(siteId);
             tapBridge.SetAttribute("DeviceName", StringValue(tapDeviceName));
             tapBridge.Install(ghostNodes.Get(siteId), ghostDevices[siteId]);
             NS_LOG_UNCOND("Tap bridge installed on Ghost Node " << siteId << " (" << tapDeviceName << ")");
+        }
+
+        //----------------------------------------------------------------------
+        // Set up tap bridge for UE (first UE only, similar to nr-mec-handover.cc)
+        //----------------------------------------------------------------------
+        // Set up Ghost node for UE
+        NodeContainer ueTapLinkNodes;
+        ueTapLinkNodes.Add(ueNodes.Get(0));
+        Ptr<Node> ueGhostNode = CreateObject<Node>();
+        ueTapLinkNodes.Add(ueGhostNode);
+
+        // Ghost node doesn't need Internet stack - it's a pure L2 bridge
+
+        CsmaHelper ueTapCsma;
+        ueTapCsma.SetChannelAttribute("DataRate", StringValue("10Gbps"));
+        ueTapCsma.SetChannelAttribute("Delay", StringValue("0"));
+
+        NetDeviceContainer ueTapDevices = ueTapCsma.Install(ueTapLinkNodes);
+
+        // Store UE's CSMA device for tunnel app
+        ueInnerCsmaDevice = ueTapDevices.Get(0);
+
+        // Only assign IP to UE's CSMA interface, not ghost node
+        // Ghost node acts as L2 bridge - external Linux host will have its own IP
+        Ipv4AddressHelper ipv4Tap;
+        ipv4Tap.SetBase("7.0.1.0", "255.255.255.0");
+        Ipv4InterfaceContainer ueTapIpIfaces = ipv4Tap.Assign(ueTapDevices.Get(0));  // UE only
+        Ipv4Address ueLanIp = ueTapIpIfaces.GetAddress(0);
+
+        Ptr<Ipv4> ueIpv4 = ueNodes.Get(0)->GetObject<Ipv4>();
+        ueIpv4->SetAttribute("IpForward", BooleanValue(true));
+
+        // Disable forwarding specifically on the CSMA interface
+        // This prevents normal IP forwarding of packets from client subnet
+        // The tunnel app will handle forwarding these packets via UDP encapsulation
+        int32_t csmaIfIndex = ueIpv4->GetInterfaceForDevice(ueTapDevices.Get(0));
+        if (csmaIfIndex >= 0)
+        {
+            ueIpv4->SetForwarding(csmaIfIndex, false);
+            NS_LOG_UNCOND("Disabled IP forwarding on UE CSMA interface " << csmaIfIndex);
+        }
+
+        // Install tap bridge on UE ghost node
+        tapBridge.SetAttribute("DeviceName", StringValue(tapUeDevice));
+        tapBridge.Install(ueTapLinkNodes.Get(1), ueTapDevices.Get(1));
+
+        NS_LOG_UNCOND("Tap bridge installed on UE (UseBridge mode)");
+        NS_LOG_UNCOND("  UE WAN IP (5G): " << ueIpAddr);
+        NS_LOG_UNCOND("  UE LAN IP (Tap): " << ueLanIp);
+        NS_LOG_UNCOND("  Tap device: " << tapUeDevice);
+
+        // Debug: Print UE routing table
+        NS_LOG_UNCOND("\nUE Routing Table:");
+        NS_LOG_UNCOND("UE has " << ueIpv4->GetNInterfaces() << " interfaces:");
+        for (uint32_t i = 0; i < ueIpv4->GetNInterfaces(); ++i)
+        {
+            NS_LOG_UNCOND("  Interface " << i << ": " << ueIpv4->GetAddress(i, 0).GetLocal());
+        }
+        Ptr<Ipv4StaticRouting> ueRouting =
+            ipv4RoutingHelper.GetStaticRouting(ueIpv4);
+        ueRouting->PrintRoutingTable(Create<OutputStreamWrapper>(&std::cout));
+    }
+
+    //--------------------------------------------------------------------------
+    // Set up UDP Tunnel Applications (if tap enabled)
+    // These tunnel client packets through the 5G network using IP-in-UDP encapsulation
+    // to bypass GTP filtering that drops packets with non-UE source IPs
+    //--------------------------------------------------------------------------
+    if (enableTap && ueInnerCsmaDevice)
+    {
+        // Get first UE's IMSI for tunnel app registration
+        Ptr<NrUeNetDevice> firstUeDev = ueNetDevs.Get(0)->GetObject<NrUeNetDevice>();
+        uint64_t firstUeImsi = firstUeDev->GetImsi();
+
+        // Install UeTunnelApp on first UE node
+        // Captures packets from client (7.0.1.x) on CSMA interface
+        // Encapsulates and sends to Edge Server via 5G NR interface
+        Ptr<UeTunnelApp> ueTunnelApp = CreateObject<UeTunnelApp>();
+        ueTunnelApp->SetInnerDevice(ueInnerCsmaDevice);
+        ueTunnelApp->SetClientSubnet(Ipv4Address("7.0.1.0"), Ipv4Mask("255.255.255.0"));
+
+        // Set initial tunnel endpoint to Edge Server 0 (10.1.0.2)
+        // This will dynamically switch based on handover via HandoverEndOkCallback
+        Ipv4Address edgeServer0Ip = Ipv4Address("10.1.0.2");
+        ueTunnelApp->SetTunnelEndpoint(edgeServer0Ip, 5000);
+        ueTunnelApp->SetLocalPort(5000);
+
+        ueNodes.Get(0)->AddApplication(ueTunnelApp);
+        ueTunnelApp->SetStartTime(Seconds(1.0));
+        ueTunnelApp->SetStopTime(Seconds(simTime));
+
+        // Store global reference for handover-triggered endpoint switching
+        g_ueTunnelApps[firstUeImsi] = ueTunnelApp;
+
+        NS_LOG_UNCOND("\nUE Tunnel App installed on UE 0 (IMSI=" << firstUeImsi << "):");
+        NS_LOG_UNCOND("  Inner device: CSMA (7.0.1.1)");
+        NS_LOG_UNCOND("  Client subnet: 7.0.1.0/24");
+        NS_LOG_UNCOND("  Initial tunnel endpoint: " << edgeServer0Ip << ":5000");
+        NS_LOG_UNCOND("  (Endpoint will switch dynamically on handover)");
+
+        // Install EdgeTunnelApp on each edge server
+        // Ghost Node Architecture:
+        //   PGW <--CSMA1--> EdgeServer <--CSMA2--> GhostNode <--TapBridge--> Docker
+        //                       |
+        //                  EdgeTunnelApp
+        //   - OuterDevice: EdgeServer's device on PGW-facing CSMA
+        //   - InnerDevice: EdgeServer's device on Ghost-facing CSMA
+        for (uint32_t siteId = 0; siteId < numSites && siteId < edgeServerInnerDevices.size(); ++siteId)
+        {
+            Ptr<EdgeTunnelApp> edgeTunnelApp = CreateObject<EdgeTunnelApp>();
+
+            // Set both devices (both belong to EdgeServer node):
+            // - Outer: EdgeServer's CSMA device facing PGW (tunnel packets arrive here)
+            // - Inner: EdgeServer's CSMA device facing GhostNode (forwards to Docker)
+            edgeTunnelApp->SetOuterDevice(edgeServerOuterDevices[siteId]);
+            edgeTunnelApp->SetInnerDevice(edgeServerInnerDevices[siteId]);
+
+            // Set inner subnet (10.x.1.0/24) - packets to other subnets will be dropped
+            // This ensures connection breaks after handover instead of routing via PGW
+            std::ostringstream innerSubnetStr;
+            innerSubnetStr << "10." << (siteId + 1) << ".1.0";
+            edgeTunnelApp->SetInnerSubnet(Ipv4Address(innerSubnetStr.str().c_str()),
+                                          Ipv4Mask("255.255.255.0"));
+
+            // Add tunnel mapping: packets to 7.0.1.x should go to UE NR IP
+            edgeTunnelApp->AddTunnelMapping(
+                Ipv4Address("7.0.1.0"),
+                Ipv4Mask("255.255.255.0"),
+                ueIpAddr  // UE's NR interface IP (7.0.0.x)
+            );
+            edgeTunnelApp->SetLocalPort(5000);
+            edgeTunnelApp->SetTunnelPort(5000);
+
+            edgeServerNodes.Get(siteId)->AddApplication(edgeTunnelApp);
+            edgeTunnelApp->SetStartTime(Seconds(1.0));
+            edgeTunnelApp->SetStopTime(Seconds(simTime));
+
+            NS_LOG_UNCOND("Edge Tunnel App " << siteId << " installed:");
+            NS_LOG_UNCOND("  Outer device: " << edgeServerOuterDevices[siteId]->GetAddress());
+            NS_LOG_UNCOND("  Inner device: " << edgeServerInnerDevices[siteId]->GetAddress());
+            NS_LOG_UNCOND("  Inner subnet: " << innerSubnetStr.str() << "/24");
+            NS_LOG_UNCOND("  Mapping: 7.0.1.0/24 -> " << ueIpAddr);
         }
     }
 
@@ -755,13 +947,30 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     nrHelper->AttachToClosestGnb(ueNetDevs, gnbNetDevs);
 
-    // Initialize serving cell tracking
+    // Initialize serving cell tracking and update tunnel endpoint based on actual attachment
     for (uint32_t i = 0; i < ueNetDevs.GetN(); ++i)
     {
         Ptr<NrUeNetDevice> ueDev = ueNetDevs.Get(i)->GetObject<NrUeNetDevice>();
         uint64_t imsi = ueDev->GetImsi();
-        // Cell ID will be set after attachment completes
-        g_ueCurrentServingCell[imsi] = 0;
+        uint16_t cellId = ueDev->GetCellId();
+        g_ueCurrentServingCell[imsi] = cellId;
+
+        NS_LOG_UNCOND("UE " << i << " (IMSI=" << imsi << ") attached to cell " << cellId);
+
+        // Update tunnel endpoint for first UE based on actual serving cell
+        if (i == 0 && enableTap && g_ueTunnelApps.count(imsi) > 0)
+        {
+            if (g_cellIdToEdgeServerIp.count(cellId) > 0)
+            {
+                Ipv4Address actualEdgeIp = g_cellIdToEdgeServerIp[cellId];
+                g_ueTunnelApps[imsi]->SetTunnelEndpoint(actualEdgeIp, 5000);
+                NS_LOG_UNCOND("  Updated tunnel endpoint to " << actualEdgeIp << " (matching serving cell)");
+            }
+            else
+            {
+                NS_LOG_WARN("  WARNING: No edge server mapping for cell " << cellId);
+            }
+        }
     }
 
     //--------------------------------------------------------------------------
@@ -786,25 +995,25 @@ main(int argc, char* argv[])
     reportConfigA3Early.maxReportCells = 8;
     reportConfigA3Early.reportInterval = NrRrcSap::ReportConfigEutra::MS480;
 
-    // Standard A3 event for handover
-    NrRrcSap::ReportConfigEutra reportConfigA3;
-    reportConfigA3.triggerType = NrRrcSap::ReportConfigEutra::EVENT;
-    reportConfigA3.eventId = NrRrcSap::ReportConfigEutra::EVENT_A3;
-    reportConfigA3.a3Offset = 0;
-    reportConfigA3.hysteresis = 6;  // 3 dB
-    reportConfigA3.timeToTrigger = 256;
-    reportConfigA3.reportOnLeave = false;
-    reportConfigA3.triggerQuantity = NrRrcSap::ReportConfigEutra::RSRP;
-    reportConfigA3.reportQuantity = NrRrcSap::ReportConfigEutra::BOTH;
-    reportConfigA3.maxReportCells = 8;
-    reportConfigA3.reportInterval = NrRrcSap::ReportConfigEutra::MS480;
+    // // Standard A3 event for handover
+    // NrRrcSap::ReportConfigEutra reportConfigA3;
+    // reportConfigA3.triggerType = NrRrcSap::ReportConfigEutra::EVENT;
+    // reportConfigA3.eventId = NrRrcSap::ReportConfigEutra::EVENT_A3;
+    // reportConfigA3.a3Offset = 0;
+    // reportConfigA3.hysteresis = 6;  // 3 dB
+    // reportConfigA3.timeToTrigger = 256;
+    // reportConfigA3.reportOnLeave = false;
+    // reportConfigA3.triggerQuantity = NrRrcSap::ReportConfigEutra::RSRP;
+    // reportConfigA3.reportQuantity = NrRrcSap::ReportConfigEutra::BOTH;
+    // reportConfigA3.maxReportCells = 8;
+    // reportConfigA3.reportInterval = NrRrcSap::ReportConfigEutra::MS480;
 
     // Add measurement configs to all gNBs
     for (uint32_t i = 0; i < gnbNodes.GetN(); ++i)
     {
         Ptr<NrGnbRrc> gnbRrc = gnbNodes.Get(i)->GetDevice(0)->GetObject<NrGnbNetDevice>()->GetRrc();
         gnbRrc->AddUeMeasReportConfig(reportConfigA3Early);
-        gnbRrc->AddUeMeasReportConfig(reportConfigA3);
+        // gnbRrc->AddUeMeasReportConfig(reportConfigA3);
     }
 
     //--------------------------------------------------------------------------
