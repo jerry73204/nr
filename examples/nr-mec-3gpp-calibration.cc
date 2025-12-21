@@ -58,6 +58,7 @@
 #include "ue-tunnel-app.h"
 #include "edge-tunnel-app.h"
 #include "handover-prediction-file.h"
+#include "zenoh-latency-measurement.h"
 
 #include <iomanip>
 #include <map>
@@ -296,6 +297,12 @@ HandoverStartCallback(std::string path,
                   << " Cell " << sourceCellId << " (Site " << sourceSite << ")"
                   << " -> Cell " << targetCellId << " (Site " << targetSite << ")");
 
+    // Mark handover as active for latency measurement
+    if (g_ueTunnelApps.count(imsi) > 0 && g_ueTunnelApps[imsi])
+    {
+        g_ueTunnelApps[imsi]->SetHandoverActive(true);
+    }
+
     if (sourceSite != targetSite)
     {
         Ipv4Address sourceEdgeIp = g_cellIdToEdgeServerIp.count(sourceCellId) ?
@@ -326,6 +333,12 @@ HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t
     NS_LOG_UNCOND(Simulator::Now().GetSeconds()
                   << "s [HANDOVER SUCCESS] IMSI=" << imsi
                   << " New ServingCell=" << cellId << " (Site " << newSite << ")");
+
+    // Clear handover active flag for latency measurement
+    if (g_ueTunnelApps.count(imsi) > 0 && g_ueTunnelApps[imsi])
+    {
+        g_ueTunnelApps[imsi]->SetHandoverActive(false);
+    }
 
     // Only switch tunnel endpoint if this is an inter-site handover
     if (previousSite != newSite && g_cellIdToEdgeServerIp.count(cellId) > 0)
@@ -426,12 +439,24 @@ main(int argc, char* argv[])
 
     // Tap bridge parameters
     bool enableTap = false;
-    std::string tapUeDevice = "tap_z_pre_sub";
+    std::string tapUeDevice = "tap_ue";
     std::string tapEdgePrefix = "tap_edge";
 
     // Handover prediction
     std::string predictionFilePath = "/tmp/ns3_handover/ns3_handover";
     double predictionWriteIntervalMs = 100.0;
+
+    // Latency measurement
+    std::string latencyOutputPath = "zenoh_latency.csv";
+    double slaThresholdMs = 50.0;
+    uint16_t sourceEdgeNodeId = 5;  // Edge node that publishes critical data
+
+    // Remote Host (traffic source / controller)
+    bool enableRemoteHost = true;
+    std::string tapRemoteHostDevice = "tap_remote";
+    double wanDelayMs = 20.0;        // WAN delay in milliseconds (one-way)
+    std::string wanDataRate = "1Gbps";  // WAN link data rate
+    uint16_t remoteHostEdgeId = 5;   // Edge server to connect remote host to
 
     // Other
     bool logging = true;
@@ -465,6 +490,18 @@ main(int argc, char* argv[])
     cmd.AddValue("predictionFilePath", "Path for handover prediction file", predictionFilePath);
     cmd.AddValue("predictionWriteIntervalMs", "Min interval between prediction writes (ms)", predictionWriteIntervalMs);
 
+    // Latency measurement
+    cmd.AddValue("latencyOutputPath", "Output path for latency CSV file", latencyOutputPath);
+    cmd.AddValue("slaThresholdMs", "SLA threshold in milliseconds", slaThresholdMs);
+    cmd.AddValue("sourceEdgeNodeId", "Edge node ID that publishes critical data", sourceEdgeNodeId);
+
+    // Remote Host
+    cmd.AddValue("enableRemoteHost", "Enable remote host (controller) node", enableRemoteHost);
+    cmd.AddValue("tapRemoteHostDevice", "Tap device name for remote host", tapRemoteHostDevice);
+    cmd.AddValue("wanDelayMs", "WAN link delay in milliseconds (one-way)", wanDelayMs);
+    cmd.AddValue("wanDataRate", "WAN link data rate (e.g., 1Gbps)", wanDataRate);
+    cmd.AddValue("remoteHostEdgeId", "Edge server ID to connect remote host to", remoteHostEdgeId);
+
     // Other
     cmd.AddValue("logging", "Enable detailed logging", logging);
 
@@ -474,6 +511,12 @@ main(int argc, char* argv[])
     HandoverPredictionFile::GetInstance().Initialize(
         predictionFilePath,
         MilliSeconds(predictionWriteIntervalMs));
+
+    // Initialize Zenoh latency measurement
+    ZenohLatencyTracker::GetInstance().Initialize(
+        latencyOutputPath,
+        slaThresholdMs,
+        sourceEdgeNodeId);
 
     // Configure real-time simulator when tap bridge is enabled
     if (enableTap)
@@ -779,6 +822,126 @@ main(int argc, char* argv[])
     }
 
     //--------------------------------------------------------------------------
+    // Set up Remote Host (controller / traffic source)
+    // Remote Host -> WAN -> Edge Server (remoteHostEdgeId) -> Zenoh -> all edges
+    //--------------------------------------------------------------------------
+    Ptr<Node> remoteHostNode = nullptr;
+    Ptr<Node> remoteHostGhostNode = nullptr;
+    Ptr<NetDevice> remoteHostGhostDevice = nullptr;
+
+    if (enableRemoteHost && enableTap)
+    {
+        // Validate remoteHostEdgeId
+        if (remoteHostEdgeId >= numSites)
+        {
+            NS_LOG_WARN("remoteHostEdgeId " << remoteHostEdgeId << " >= numSites " << numSites
+                        << ", using edge 0 instead");
+            remoteHostEdgeId = 0;
+        }
+
+        // Create Remote Host node
+        remoteHostNode = CreateObject<Node>();
+        internet.Install(remoteHostNode);
+
+        // Create Ghost node for Remote Host (for tap bridge)
+        remoteHostGhostNode = CreateObject<Node>();
+        // Ghost node doesn't need IP stack - it's pure L2 bridge
+
+        // WAN link: Remote Host <-> Edge Server (remoteHostEdgeId)
+        // Using point-to-point link to simulate WAN with configurable delay
+        PointToPointHelper wanP2p;
+        wanP2p.SetDeviceAttribute("DataRate", StringValue(wanDataRate));
+        wanP2p.SetChannelAttribute("Delay", TimeValue(MilliSeconds(wanDelayMs)));
+
+        NodeContainer wanNodes;
+        wanNodes.Add(remoteHostNode);
+        wanNodes.Add(edgeServerNodes.Get(remoteHostEdgeId));
+
+        NetDeviceContainer wanDevices = wanP2p.Install(wanNodes);
+
+        // Assign IP addresses for WAN link: 8.0.0.0/24
+        // Using 8.x.x.x range to avoid conflicts with:
+        // - Docker bridge networks (172.17.x.x, 192.168.x.x)
+        // - UE network (7.0.x.x)
+        // - Edge networks (10.x.x.x)
+        Ipv4AddressHelper wanIpHelper;
+        wanIpHelper.SetBase("8.0.0.0", "255.255.255.0");
+        Ipv4InterfaceContainer wanIpIfaces = wanIpHelper.Assign(wanDevices);
+        Ipv4Address remoteHostWanIp = wanIpIfaces.GetAddress(0);  // 8.0.0.1
+        Ipv4Address edgeWanIp = wanIpIfaces.GetAddress(1);        // 8.0.0.2
+
+        // CSMA link: Remote Host <-> Ghost Node (for tap bridge)
+        CsmaHelper remoteHostCsma;
+        remoteHostCsma.SetChannelAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
+        remoteHostCsma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(0)));
+
+        NodeContainer remoteHostGhostLink;
+        remoteHostGhostLink.Add(remoteHostNode);
+        remoteHostGhostLink.Add(remoteHostGhostNode);
+
+        NetDeviceContainer remoteHostGhostDevices = remoteHostCsma.Install(remoteHostGhostLink);
+
+        // Assign IP for Remote Host's CSMA interface (ghost segment): 8.0.1.0/24
+        // Docker controller will use 8.0.1.x addresses
+        Ipv4AddressHelper remoteHostCsmaIpHelper;
+        remoteHostCsmaIpHelper.SetBase("8.0.1.0", "255.255.255.0");
+        remoteHostCsmaIpHelper.Assign(remoteHostGhostDevices.Get(0));  // Remote Host only (8.0.1.1)
+
+        remoteHostGhostDevice = remoteHostGhostDevices.Get(1);
+
+        // Set up routing on Remote Host
+        // Default route via Edge Server
+        Ptr<Ipv4StaticRouting> remoteHostRouting =
+            ipv4RoutingHelper.GetStaticRouting(remoteHostNode->GetObject<Ipv4>());
+        remoteHostRouting->SetDefaultRoute(edgeWanIp, 1);
+
+        // Add route on target Edge Server for Remote Host's ghost segment
+        Ptr<Ipv4StaticRouting> targetEdgeRouting =
+            ipv4RoutingHelper.GetStaticRouting(edgeServerNodes.Get(remoteHostEdgeId)->GetObject<Ipv4>());
+        // Route for remote host ghost segment (8.0.1.0/24) via Remote Host WAN IP
+        targetEdgeRouting->AddNetworkRouteTo(
+            Ipv4Address("8.0.1.0"),
+            Ipv4Mask("255.255.255.0"),
+            remoteHostWanIp,
+            edgeServerNodes.Get(remoteHostEdgeId)->GetObject<Ipv4>()->GetInterfaceForAddress(edgeWanIp)
+        );
+
+        // Add route on PGW for Remote Host network (for return traffic)
+        Ptr<Ipv4StaticRouting> pgwRouting =
+            ipv4RoutingHelper.GetStaticRouting(pgw->GetObject<Ipv4>());
+        // First find the edge server's PGW-facing IP
+        Ipv4Address targetEdgePgwIp = Ipv4Address("10.1.0.2");  // Default
+        for (uint32_t i = 0; i < edgeServerNodes.Get(remoteHostEdgeId)->GetObject<Ipv4>()->GetNInterfaces(); ++i)
+        {
+            Ipv4Address addr = edgeServerNodes.Get(remoteHostEdgeId)->GetObject<Ipv4>()->GetAddress(i, 0).GetLocal();
+            std::ostringstream expectedBase;
+            expectedBase << "10." << (remoteHostEdgeId + 1) << ".0.";
+            if (addr == Ipv4Address((expectedBase.str() + "2").c_str()))
+            {
+                targetEdgePgwIp = addr;
+                break;
+            }
+        }
+        // Route 8.0.x.0/16 via target edge server
+        pgwRouting->AddNetworkRouteTo(
+            Ipv4Address("8.0.0.0"),
+            Ipv4Mask("255.255.0.0"),
+            targetEdgePgwIp,
+            1  // PGW interface to edge network
+        );
+
+        NS_LOG_UNCOND("\n==============================================");
+        NS_LOG_UNCOND("Remote Host Setup:");
+        NS_LOG_UNCOND("  WAN Link: Remote Host <-> Edge " << remoteHostEdgeId);
+        NS_LOG_UNCOND("  WAN Delay: " << wanDelayMs << " ms (one-way)");
+        NS_LOG_UNCOND("  WAN Data Rate: " << wanDataRate);
+        NS_LOG_UNCOND("  Remote Host WAN IP: " << remoteHostWanIp);
+        NS_LOG_UNCOND("  Edge WAN IP: " << edgeWanIp);
+        NS_LOG_UNCOND("  Remote Host Ghost Subnet: 8.0.1.0/24 (Docker controller uses 8.0.1.x)");
+        NS_LOG_UNCOND("==============================================\n");
+    }
+
+    //--------------------------------------------------------------------------
     // Install tap bridges (if enabled)
     //--------------------------------------------------------------------------
     // Store UE's inner CSMA device for tunnel app (needs to be accessible later)
@@ -797,6 +960,16 @@ main(int argc, char* argv[])
             tapBridge.SetAttribute("DeviceName", StringValue(tapDeviceName));
             tapBridge.Install(ghostNodes.Get(siteId), ghostDevices[siteId]);
             NS_LOG_UNCOND("Tap bridge installed on Ghost Node " << siteId << " (" << tapDeviceName << ")");
+        }
+
+        //----------------------------------------------------------------------
+        // Install tap bridge for Remote Host (if enabled)
+        //----------------------------------------------------------------------
+        if (enableRemoteHost && remoteHostGhostNode && remoteHostGhostDevice)
+        {
+            tapBridge.SetAttribute("DeviceName", StringValue(tapRemoteHostDevice));
+            tapBridge.Install(remoteHostGhostNode, remoteHostGhostDevice);
+            NS_LOG_UNCOND("Tap bridge installed on Remote Host Ghost Node (" << tapRemoteHostDevice << ")");
         }
 
         //----------------------------------------------------------------------
@@ -929,6 +1102,7 @@ main(int argc, char* argv[])
             );
             edgeTunnelApp->SetLocalPort(5000);
             edgeTunnelApp->SetTunnelPort(5000);
+            edgeTunnelApp->SetEdgeNodeId(siteId);
 
             edgeServerNodes.Get(siteId)->AddApplication(edgeTunnelApp);
             edgeTunnelApp->SetStartTime(Seconds(1.0));
@@ -1069,6 +1243,10 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("\n==============================================");
     NS_LOG_UNCOND("Simulation Complete");
     NS_LOG_UNCOND("==============================================");
+
+    // Print Zenoh latency measurement summary
+    ZenohLatencyTracker::GetInstance().PrintSummary();
+    ZenohLatencyTracker::GetInstance().Close();
 
     Simulator::Destroy();
     return 0;

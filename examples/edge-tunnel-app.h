@@ -89,6 +89,12 @@ class EdgeTunnelApp : public Application
      */
     void SetInnerSubnet(Ipv4Address subnet, Ipv4Mask mask);
 
+    /**
+     * @brief Set the edge node ID for latency measurement
+     * @param nodeId The edge node ID (e.g., site ID)
+     */
+    void SetEdgeNodeId(uint16_t nodeId);
+
   protected:
     void DoDispose() override;
 
@@ -179,6 +185,9 @@ class EdgeTunnelApp : public Application
     Ipv4Address m_innerSubnet;
     Ipv4Mask m_innerMask;
     bool m_innerSubnetSet;
+
+    // Edge node ID for latency measurement
+    uint16_t m_edgeNodeId;
 };
 
 } // namespace ns3

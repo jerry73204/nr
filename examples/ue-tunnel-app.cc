@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "ue-tunnel-app.h"
+#include "zenoh-latency-measurement.h"
 
 #include "ns3/arp-cache.h"
 #include "ns3/inet-socket-address.h"
@@ -41,7 +42,8 @@ UeTunnelApp::UeTunnelApp()
       m_clientMask(Ipv4Mask("255.255.255.0")),
       m_running(false),
       m_txPackets(0),
-      m_rxPackets(0)
+      m_rxPackets(0),
+      m_handoverActive(false)
 {
     NS_LOG_FUNCTION(this);
 }
@@ -108,6 +110,13 @@ Ipv4Address
 UeTunnelApp::GetTunnelEndpoint() const
 {
     return m_edgeServerIp;
+}
+
+void
+UeTunnelApp::SetHandoverActive(bool active)
+{
+    NS_LOG_FUNCTION(this << active);
+    m_handoverActive = active;
 }
 
 void
@@ -327,6 +336,31 @@ UeTunnelApp::ReceiveFromTunnel(Ptr<Socket> socket)
                           << packet->GetSize() << " bytes from " << address.GetIpv4());
 
             m_rxPackets++;
+
+            // Extract Zenoh sequence number from payload pattern "[XXXX]" and record latency
+            // Enable debug for first 20 packets to diagnose parsing
+            static uint32_t debugCount = 0;
+            bool enableDebug = (debugCount < 20);
+            debugCount++;
+
+            auto seq = ExtractZenohPayloadSeq(packet, enableDebug);
+            if (seq)
+            {
+                double latencyMs = ZenohLatencyTracker::GetInstance().RecordReceive(
+                    *seq, m_handoverActive);
+
+                if (latencyMs >= 0)
+                {
+                    NS_LOG_UNCOND("[UE_TUNNEL] Zenoh seq=" << *seq
+                                << " latency=" << latencyMs << "ms");
+
+                    if (latencyMs > 50.0)
+                    {
+                        NS_LOG_WARN("[SLA VIOLATION] seq=" << *seq
+                                    << " latency=" << latencyMs << "ms > 50ms");
+                    }
+                }
+            }
 
             // The packet payload is the original IP packet - forward to inner device
             ForwardToInner(packet);

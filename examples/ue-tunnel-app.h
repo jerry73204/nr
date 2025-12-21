@@ -77,6 +77,12 @@ class UeTunnelApp : public Application
      */
     Ipv4Address GetTunnelEndpoint() const;
 
+    /**
+     * @brief Set handover active flag for latency measurement
+     * @param active Whether handover is currently in progress
+     */
+    void SetHandoverActive(bool active);
+
   protected:
     void DoDispose() override;
 
@@ -143,6 +149,9 @@ class UeTunnelApp : public Application
 
     // Learned MAC addresses (IP -> MAC) for clients behind tap bridge
     std::map<uint32_t, Mac48Address> m_learnedMacs;
+
+    // Handover state for latency measurement
+    bool m_handoverActive;
 };
 
 } // namespace ns3
