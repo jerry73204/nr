@@ -5,30 +5,50 @@
  * @file zenoh-latency-measurement.h
  * @brief Zenoh end-to-end latency measurement for ns-3 simulation
  *
- * Extracts Zenoh Source Info (source_id + source_sn) from packet payloads
- * to track end-to-end latency through the simulated 5G network, even when
- * packets traverse external Zenoh routers via tap bridge.
+ * Measures pure network latency through NS-3 simulation by tracking packets
+ * using payload sequence numbers. Since Zenoh routers repackage data (changing
+ * outer frame headers), we use the application-layer payload pattern "[XXXX]"
+ * from z_pub.rs to correlate the same logical packet across network hops.
  *
- * Key insight: Transport SN (Frame.sn) changes at each Zenoh router hop,
- * but Source Info (Put.ext_sinfo) is preserved end-to-end:
- *   - source_id: ZenohID + EntityID of the original publisher
- *   - source_sn: Sequence number from the original publisher
+ * Approach: Extract sequence number from payload pattern "[   X]" or "[XXXX]"
+ * which is preserved end-to-end regardless of Zenoh router processing.
  *
- * Packet structure:
- *   Frame (Transport layer)
- *     └── NetworkMessage: Push (Network layer)
- *           ├── wire_expr (key expression)
- *           └── PushBody: Put (Zenoh layer)
- *                 ├── timestamp (optional)
- *                 ├── encoding
- *                 ├── ext_sinfo ← USE THIS for tracking
- *                 │     ├── source_id (zid + eid)
- *                 │     └── source_sn (u32)
- *                 └── payload
+ * Network topology and measurement points:
  *
- * Measurement points:
- * - START: EdgeTunnelApp::SendToTunnel() - packet enters 5G network
- * - END: UeTunnelApp::ReceiveFromTunnel() - packet exits 5G network
+ *   External Publisher (Docker)
+ *         |
+ *   [tap_remote] ─── Ghost Node
+ *         |
+ *   Remote Host NS-3 Node  ◄── START: RecordSend() - packet enters NS-3
+ *         |
+ *      WAN P2P (configurable delay)
+ *         |
+ *   Edge Server (remoteHostEdgeId)
+ *         |
+ *   [tap_edge] ─── Docker Zenoh routing ─── [tap_edge]
+ *         |
+ *   Edge Server (serving UE)  ◄── RecordHopIngress() + RecordHopEgress()
+ *         |
+ *      5G NR tunnel
+ *         |
+ *        UE  ◄── END: RecordReceive() - packet arrives at UE
+ *         |
+ *   [tap_ue] ─── Ghost Node
+ *         |
+ *   External Subscriber (Docker)
+ *
+ * Currently recorded timestamps:
+ * - send_time: When packet enters NS-3 at Remote Host (from tap_remote)
+ * - recv_time: When packet arrives at UE (from 5G tunnel)
+ * - hops[]: Ingress/egress at serving edge only (Edge Server -> 5G tunnel)
+ *
+ * NOT recorded (future work - requires additional hooks):
+ * - Intermediate edge hops (Edge 5 -> Docker -> Edge X)
+ * - These pass through normal IP routing without EdgeTunnelApp interception
+ *
+ * This measures pure NS-3 network latency, excluding:
+ * - External Zenoh processing time (Docker routing)
+ * - Docker/host network stack delays
  */
 
 #ifndef ZENOH_LATENCY_MEASUREMENT_H
@@ -47,6 +67,7 @@
 #include <optional>
 #include <string>
 #include <sstream>
+#include <vector>
 
 namespace ns3
 {
@@ -612,14 +633,38 @@ public:
     }
 
     // Sequence number based API (for payload pattern "[XXX]" extraction)
+    // Special node IDs: 0xFFFF = Remote Host, 0xFFFE = UE
+    static constexpr uint16_t NODE_REMOTE_HOST = 0xFFFF;
+    static constexpr uint16_t NODE_UE = 0xFFFE;
+
+    /**
+     * @brief Record when a packet enters NS-3 at Remote Host (START point)
+     * Only records the start time - no hop entry for Remote Host itself
+     */
     void RecordSend(uint32_t zenohSn, uint16_t edgeNodeId)
     {
         if (!m_initialized) return;
         std::lock_guard<std::mutex> lock(m_mutex);
         std::string key = "seq:" + std::to_string(zenohSn);
-        m_pendingSends[key] = {Simulator::Now().GetNanoSeconds(), edgeNodeId, "payload", zenohSn};
+
+        SendRecord record;
+        record.sendTimeNs = Simulator::Now().GetNanoSeconds();
+        record.lastEdgeNodeId = edgeNodeId;
+        record.sourceId = "payload";
+        record.sourceSn = zenohSn;
+        // No hop entry for Remote Host - we only care about edge-to-edge timestamps
+
+        m_pendingSends[key] = record;
     }
 
+        m_pendingSends[key] = {Simulator::Now().GetNanoSeconds(), edgeNodeId, "payload", zenohSn};
+        }
+    }
+
+    /**
+     * @brief Record when a packet arrives at UE (END point)
+     * Only records the receive time - no hop entry for UE itself
+     */
     double RecordReceive(uint32_t zenohSn, bool handoverActive = false)
     {
         if (!m_initialized) return -1.0;
@@ -716,6 +761,8 @@ private:
         uint16_t edgeNodeId;
         std::string sourceId;
         uint32_t sourceSn;
+
+        SendRecord() : sendTimeNs(0), lastEdgeNodeId(0), sourceSn(0) {}
     };
 
     bool m_initialized = false;

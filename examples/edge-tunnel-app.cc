@@ -372,19 +372,6 @@ EdgeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket, Ipv4Address ueAddr)
     // Create a copy of the inner packet as the tunnel payload
     Ptr<Packet> tunnelPacket = innerPacket->Copy();
 
-    // Extract Zenoh sequence number from payload pattern "[XXXX]" and record send time
-    // Enable debug for first 20 packets to diagnose parsing
-    static uint32_t debugCount = 0;
-    bool enableDebug = (debugCount < 20);
-    debugCount++;
-
-    auto seq = ExtractZenohPayloadSeq(innerPacket, enableDebug);
-    if (seq)
-    {
-        ZenohLatencyTracker::GetInstance().RecordSend(*seq, m_edgeNodeId);
-        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " recorded from Edge " << m_edgeNodeId);
-    }
-
     // Send to UE via tunnel (goes through outer device to PGW)
     InetSocketAddress remote = InetSocketAddress(ueAddr, m_tunnelPort);
     int ret = m_tunnelSocket->SendTo(tunnelPacket, 0, remote);

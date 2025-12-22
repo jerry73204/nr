@@ -413,6 +413,48 @@ PrintUePosition(NodeContainer ueNodes)
 }
 
 //==============================================================================
+// Remote Host Packet Monitor (for end-to-end latency measurement)
+//==============================================================================
+
+/**
+ * @brief Callback to capture packets entering NS-3 from external Zenoh publisher
+ *
+ * This is the START point for end-to-end latency measurement.
+ * Packets arrive from Docker via tap_remote -> ghost node -> Remote Host CSMA.
+ */
+bool
+RemoteHostPacketMonitor(Ptr<NetDevice> device,
+                        Ptr<const Packet> packet,
+                        uint16_t protocol,
+                        const Address& source,
+                        const Address& destination,
+                        NetDevice::PacketType packetType)
+{
+    // Only handle IP packets
+    if (protocol != 0x0800)
+    {
+        return false;
+    }
+
+    // Extract Zenoh sequence number from payload pattern "[XXXX]"
+    static uint32_t debugCount = 0;
+    bool enableDebug = (debugCount < 20);
+    debugCount++;
+
+    auto seq = ExtractZenohPayloadSeq(packet, enableDebug);
+    if (seq)
+    {
+        // Record send time at Remote Host (START of NS-3 path)
+        // Use special node ID 0xFFFF for Remote Host
+        ZenohLatencyTracker::GetInstance().RecordSend(*seq, ZenohLatencyTracker::NODE_REMOTE_HOST);
+        NS_LOG_UNCOND("[REMOTE_HOST] Zenoh seq=" << *seq << " enters NS-3");
+    }
+
+    // Return false to allow normal packet processing
+    return false;
+}
+
+//==============================================================================
 // Main Function
 //==============================================================================
 
@@ -889,6 +931,12 @@ main(int argc, char* argv[])
 
         remoteHostGhostDevice = remoteHostGhostDevices.Get(1);
 
+        // Install promiscuous callback on Remote Host's CSMA device to capture
+        // packets entering the simulation from external Zenoh publisher
+        // This is the true entry point for end-to-end latency measurement
+        remoteHostGhostDevices.Get(0)->SetPromiscReceiveCallback(
+            MakeCallback(&RemoteHostPacketMonitor));
+
         // Set up routing on Remote Host
         // Default route via Edge Server
         Ptr<Ipv4StaticRouting> remoteHostRouting =
@@ -1022,15 +1070,15 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("  Tap device: " << tapUeDevice);
 
         // Debug: Print UE routing table
-        NS_LOG_UNCOND("\nUE Routing Table:");
-        NS_LOG_UNCOND("UE has " << ueIpv4->GetNInterfaces() << " interfaces:");
-        for (uint32_t i = 0; i < ueIpv4->GetNInterfaces(); ++i)
-        {
-            NS_LOG_UNCOND("  Interface " << i << ": " << ueIpv4->GetAddress(i, 0).GetLocal());
-        }
-        Ptr<Ipv4StaticRouting> ueRouting =
-            ipv4RoutingHelper.GetStaticRouting(ueIpv4);
-        ueRouting->PrintRoutingTable(Create<OutputStreamWrapper>(&std::cout));
+        // NS_LOG_UNCOND("\nUE Routing Table:");
+        // NS_LOG_UNCOND("UE has " << ueIpv4->GetNInterfaces() << " interfaces:");
+        // for (uint32_t i = 0; i < ueIpv4->GetNInterfaces(); ++i)
+        // {
+        //     NS_LOG_UNCOND("  Interface " << i << ": " << ueIpv4->GetAddress(i, 0).GetLocal());
+        // }
+        // Ptr<Ipv4StaticRouting> ueRouting =
+        //     ipv4RoutingHelper.GetStaticRouting(ueIpv4);
+        // ueRouting->PrintRoutingTable(Create<OutputStreamWrapper>(&std::cout));
     }
 
     //--------------------------------------------------------------------------
