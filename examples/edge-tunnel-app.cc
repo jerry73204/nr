@@ -242,6 +242,16 @@ EdgeTunnelApp::ReceiveFromOuter(Ptr<NetDevice> device,
     Ipv4Address srcAddr = ipHeader.GetSource();
     Ipv4Address dstAddr = ipHeader.GetDestination();
 
+    // Record INGRESS for ALL Zenoh packets arriving from WAN/PGW side
+    // This captures packets at intermediate edges (e.g., Edge 5) before they go to Docker
+    auto seq = ExtractZenohPayloadSeq(pktCopy, false);
+    if (seq)
+    {
+        ZenohLatencyTracker::GetInstance().RecordHopIngress(*seq, m_edgeNodeId);
+        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " ingress at Edge " << m_edgeNodeId
+                      << " (from " << srcAddr << ")");
+    }
+
     // Check if this is a tunnel packet (UDP to our IP on tunnel port)
     Ptr<Ipv4> ipv4 = GetNode()->GetObject<Ipv4>();
     bool isLocalDst = false;
@@ -351,6 +361,15 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Downstream: "
                   << srcAddr << " -> " << dstAddr << " via UE " << ueAddr
                   << " (size=" << packet->GetSize() << ")");
+
+    // Record edge egress - packet leaving edge to UE via 5G tunnel
+    // This is the EDGE_EGRESS point for this edge server
+    auto seq = ExtractZenohPayloadSeq(packet, false);
+    if (seq)
+    {
+        ZenohLatencyTracker::GetInstance().RecordHopEgress(*seq, m_edgeNodeId);
+        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " egress from Edge " << m_edgeNodeId);
+    }
 
     // Tunnel this packet to the UE
     SendToTunnel(packet, ueAddr);

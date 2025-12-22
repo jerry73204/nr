@@ -516,7 +516,7 @@ public:
         if (m_csvFile.is_open())
         {
             m_csvFile << "source_id,source_sn,send_time_ms,recv_time_ms,"
-                      << "latency_ms,edge_node_id,sla_violation,handover_active\n";
+                      << "latency_ms,edge_node_id,sla_violation,handover_active,hops\n";
             m_csvFile.flush();
         }
 
@@ -550,7 +550,7 @@ public:
         std::string key = srcInfo->GetKey();
         SendRecord record;
         record.sendTimeNs = Simulator::Now().GetNanoSeconds();
-        record.edgeNodeId = edgeNodeId;
+        record.lastEdgeNodeId = edgeNodeId;
         record.sourceId = srcInfo->sourceIdHex;
         record.sourceSn = srcInfo->sourceSn;
 
@@ -596,7 +596,7 @@ public:
         }
 
         int64_t sendTimeNs = it->second.sendTimeNs;
-        uint16_t edgeNodeId = it->second.edgeNodeId;
+        uint16_t edgeNodeId = it->second.lastEdgeNodeId;
         std::string sourceId = it->second.sourceId;
         uint32_t sourceSn = it->second.sourceSn;
         int64_t recvTimeNs = Simulator::Now().GetNanoSeconds();
@@ -657,7 +657,51 @@ public:
         m_pendingSends[key] = record;
     }
 
-        m_pendingSends[key] = {Simulator::Now().GetNanoSeconds(), edgeNodeId, "payload", zenohSn};
+    /**
+     * @brief Record when a packet arrives at an edge node (ingress)
+     */
+    void RecordHopIngress(uint32_t zenohSn, uint16_t nodeId)
+    {
+        if (!m_initialized) return;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::string key = "seq:" + std::to_string(zenohSn);
+        auto it = m_pendingSends.find(key);
+        if (it == m_pendingSends.end()) return;
+
+        int64_t now = Simulator::Now().GetNanoSeconds();
+        it->second.hops.emplace_back(nodeId, now, 0);
+    }
+
+    /**
+     * @brief Record when a packet leaves an edge node (egress to 5G/WAN)
+     * If no ingress entry exists for this node, creates one with ingress=egress
+     */
+    void RecordHopEgress(uint32_t zenohSn, uint16_t nodeId)
+    {
+        if (!m_initialized) return;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::string key = "seq:" + std::to_string(zenohSn);
+        auto it = m_pendingSends.find(key);
+        if (it == m_pendingSends.end()) return;
+
+        int64_t now = Simulator::Now().GetNanoSeconds();
+        // Find the hop for this node and update egress time
+        bool found = false;
+        for (auto& hop : it->second.hops)
+        {
+            if (hop.nodeId == nodeId && hop.egressTimeNs == 0)
+            {
+                hop.egressTimeNs = now;
+                it->second.lastEdgeNodeId = nodeId;
+                found = true;
+                break;
+            }
+        }
+        // If no ingress entry exists, create one with ingress=egress (downstream only)
+        if (!found)
+        {
+            it->second.hops.emplace_back(nodeId, now, now);
+            it->second.lastEdgeNodeId = nodeId;
         }
     }
 
@@ -674,10 +718,12 @@ public:
         if (it == m_pendingSends.end()) return -1.0;
 
         int64_t sendTimeNs = it->second.sendTimeNs;
-        uint16_t edgeNodeId = it->second.edgeNodeId;
+        uint16_t edgeNodeId = it->second.lastEdgeNodeId;
         int64_t recvTimeNs = Simulator::Now().GetNanoSeconds();
         double latencyMs = (recvTimeNs - sendTimeNs) / 1e6;
         bool slaViolation = latencyMs > m_slaThresholdMs;
+
+        // No hop entry for UE - we only care about edge-to-edge timestamps
 
         m_totalPackets++;
         m_sumLatency += latencyMs;
@@ -685,9 +731,20 @@ public:
         if (latencyMs < m_minLatency) m_minLatency = latencyMs;
         if (slaViolation) m_slaViolations++;
 
-        // Write to CSV
+        // Write to CSV - include hop details
         if (m_csvFile.is_open())
         {
+            // Build hop string: "nodeId:ingress:egress;nodeId:ingress:egress;..."
+            std::ostringstream hopStr;
+            for (size_t i = 0; i < it->second.hops.size(); ++i)
+            {
+                const auto& hop = it->second.hops[i];
+                if (i > 0) hopStr << ";";
+                hopStr << hop.nodeId << ":"
+                       << (hop.ingressTimeNs / 1000000) << ":"
+                       << (hop.egressTimeNs / 1000000);
+            }
+
             m_csvFile << "\"payload\","
                       << zenohSn << ","
                       << (sendTimeNs / 1000000) << ","
@@ -695,7 +752,8 @@ public:
                       << latencyMs << ","
                       << edgeNodeId << ","
                       << (slaViolation ? 1 : 0) << ","
-                      << (handoverActive ? 1 : 0) << "\n";
+                      << (handoverActive ? 1 : 0) << ","
+                      << "\"" << hopStr.str() << "\"\n";
             m_csvFile.flush();
         }
 
@@ -755,10 +813,22 @@ private:
     ZenohLatencyTracker(const ZenohLatencyTracker&) = delete;
     ZenohLatencyTracker& operator=(const ZenohLatencyTracker&) = delete;
 
+    // Per-hop timestamp record (NDN-like structure)
+    struct HopTimestamp
+    {
+        uint16_t nodeId;       // Node ID (edge server ID or special: 0xFFFF=remote, 0xFFFE=ue)
+        int64_t ingressTimeNs; // When packet arrived at this node
+        int64_t egressTimeNs;  // When packet left this node (0 if not yet)
+
+        HopTimestamp(uint16_t id = 0, int64_t ingress = 0, int64_t egress = 0)
+            : nodeId(id), ingressTimeNs(ingress), egressTimeNs(egress) {}
+    };
+
     struct SendRecord
     {
-        int64_t sendTimeNs;
-        uint16_t edgeNodeId;
+        int64_t sendTimeNs;           // START: packet enters NS-3 (Remote Host)
+        std::vector<HopTimestamp> hops;  // Timestamps at each hop along the path
+        uint16_t lastEdgeNodeId;      // Edge node that sent to UE (for backward compat)
         std::string sourceId;
         uint32_t sourceSn;
 
