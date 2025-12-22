@@ -870,6 +870,7 @@ main(int argc, char* argv[])
     Ptr<Node> remoteHostNode = nullptr;
     Ptr<Node> remoteHostGhostNode = nullptr;
     Ptr<NetDevice> remoteHostGhostDevice = nullptr;
+    Ptr<NetDevice> edgeWanDevice = nullptr;  // WAN P2P device on source edge (for ingress tracking)
 
     if (enableRemoteHost && enableTap)
     {
@@ -900,6 +901,7 @@ main(int argc, char* argv[])
         wanNodes.Add(edgeServerNodes.Get(remoteHostEdgeId));
 
         NetDeviceContainer wanDevices = wanP2p.Install(wanNodes);
+        edgeWanDevice = wanDevices.Get(1);  // Edge server's WAN P2P device (8.0.0.2)
 
         // Assign IP addresses for WAN link: 8.0.0.0/24
         // Using 8.x.x.x range to avoid conflicts with:
@@ -1151,6 +1153,12 @@ main(int argc, char* argv[])
             edgeTunnelApp->SetLocalPort(5000);
             edgeTunnelApp->SetTunnelPort(5000);
             edgeTunnelApp->SetEdgeNodeId(siteId);
+
+            // For the source edge (connected to Remote Host), set WAN device for ingress tracking
+            if (siteId == remoteHostEdgeId && edgeWanDevice)
+            {
+                edgeTunnelApp->SetWanDevice(edgeWanDevice);
+            }
 
             edgeServerNodes.Get(siteId)->AddApplication(edgeTunnelApp);
             edgeTunnelApp->SetStartTime(Seconds(1.0));

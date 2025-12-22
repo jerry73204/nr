@@ -37,6 +37,7 @@ EdgeTunnelApp::EdgeTunnelApp()
     : m_tunnelSocket(nullptr),
       m_outerDevice(nullptr),
       m_innerDevice(nullptr),
+      m_wanDevice(nullptr),
       m_localPort(5000),
       m_tunnelPort(5000),
       m_running(false),
@@ -62,6 +63,7 @@ EdgeTunnelApp::DoDispose()
     m_tunnelSocket = nullptr;
     m_outerDevice = nullptr;
     m_innerDevice = nullptr;
+    m_wanDevice = nullptr;
     m_tunnelMappings.clear();
     Application::DoDispose();
 }
@@ -122,6 +124,13 @@ EdgeTunnelApp::SetEdgeNodeId(uint16_t nodeId)
 }
 
 void
+EdgeTunnelApp::SetWanDevice(Ptr<NetDevice> device)
+{
+    NS_LOG_FUNCTION(this << device);
+    m_wanDevice = device;
+}
+
+void
 EdgeTunnelApp::StartApplication()
 {
     NS_LOG_FUNCTION(this);
@@ -170,6 +179,16 @@ EdgeTunnelApp::StartApplication()
     else
     {
         NS_LOG_ERROR("No inner device set for EdgeTunnelApp");
+    }
+
+    // Register promiscuous callback on WAN device (Remote Host side)
+    // This captures packets arriving from Remote Host for ingress timestamp recording
+    // Only the source edge (connected to Remote Host) needs this
+    if (m_wanDevice)
+    {
+        m_wanDevice->SetPromiscReceiveCallback(
+            MakeCallback(&EdgeTunnelApp::ReceiveFromWan, this));
+        NS_LOG_UNCOND("  WAN device (Remote Host side): " << m_wanDevice->GetAddress());
     }
 
     NS_LOG_UNCOND("  Local port: " << m_localPort);
@@ -291,6 +310,49 @@ EdgeTunnelApp::ReceiveFromOuter(Ptr<NetDevice> device,
     }
 
     // Not a tunnel packet, let it pass through
+    return false;
+}
+
+bool
+EdgeTunnelApp::ReceiveFromWan(Ptr<NetDevice> device,
+                               Ptr<const Packet> packet,
+                               uint16_t protocol,
+                               const Address& source,
+                               const Address& destination,
+                               NetDevice::PacketType packetType)
+{
+    // This callback handles packets arriving from Remote Host via WAN P2P link
+    // Only used for the source edge (Edge 5) to record ingress timestamps
+    NS_LOG_FUNCTION(this << packet->GetSize() << protocol);
+
+    if (!m_running)
+    {
+        return false;
+    }
+
+    // Only handle IP packets
+    if (protocol != 0x0800)
+    {
+        return false;
+    }
+
+    // Extract IP header for logging
+    Ptr<Packet> pktCopy = packet->Copy();
+    Ipv4Header ipHeader;
+    pktCopy->PeekHeader(ipHeader);
+
+    Ipv4Address srcAddr = ipHeader.GetSource();
+
+    // Record INGRESS for Zenoh packets arriving from Remote Host via WAN
+    auto seq = ExtractZenohPayloadSeq(pktCopy, false);
+    if (seq)
+    {
+        ZenohLatencyTracker::GetInstance().RecordHopIngress(*seq, m_edgeNodeId);
+        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " ingress at Edge " << m_edgeNodeId
+                      << " via WAN (from " << srcAddr << ")");
+    }
+
+    // Let the packet continue through normal routing
     return false;
 }
 

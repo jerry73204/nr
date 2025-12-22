@@ -95,6 +95,15 @@ class EdgeTunnelApp : public Application
      */
     void SetEdgeNodeId(uint16_t nodeId);
 
+    /**
+     * @brief Set the WAN (Remote Host) network device for ingress monitoring
+     * @param device The P2P NetDevice connected to Remote Host (only for source edge)
+     *
+     * This is only needed for the edge server that connects to Remote Host.
+     * Packets arriving via WAN are monitored for ingress timestamp recording.
+     */
+    void SetWanDevice(Ptr<NetDevice> device);
+
   protected:
     void DoDispose() override;
 
@@ -113,6 +122,17 @@ class EdgeTunnelApp : public Application
                           const Address& source,
                           const Address& destination,
                           NetDevice::PacketType packetType);
+
+    /**
+     * @brief Callback for packets received on WAN (Remote Host) device
+     * Records ingress timestamp for packets arriving from Remote Host
+     */
+    bool ReceiveFromWan(Ptr<NetDevice> device,
+                        Ptr<const Packet> packet,
+                        uint16_t protocol,
+                        const Address& source,
+                        const Address& destination,
+                        NetDevice::PacketType packetType);
 
     /**
      * @brief Callback for packets received on inner (Ghost/tap) device
@@ -169,6 +189,9 @@ class EdgeTunnelApp : public Application
 
     // Inner device (CSMA to GhostNode - forwards to Docker via TapBridge)
     Ptr<NetDevice> m_innerDevice;
+
+    // WAN device (P2P to Remote Host - only for source edge)
+    Ptr<NetDevice> m_wanDevice;
 
     // Tunnel ports
     uint16_t m_localPort;
