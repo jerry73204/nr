@@ -337,15 +337,7 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
         }
     }
 
-    // Look up if this destination should be tunneled to a UE (7.0.1.x subnet)
-    Ipv4Address ueAddr = LookupTunnelEndpoint(dstAddr);
-    if (ueAddr == Ipv4Address("0.0.0.0"))
-    {
-        // No tunnel mapping for this destination
-        return false;
-    }
-
-    // Don't tunnel packets from local addresses (prevent loops)
+    // Don't process packets from local addresses (prevent loops)
     Ptr<Ipv4> ipv4 = GetNode()->GetObject<Ipv4>();
     for (uint32_t i = 0; i < ipv4->GetNInterfaces(); ++i)
     {
@@ -353,23 +345,33 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
         {
             if (ipv4->GetAddress(i, j).GetLocal() == srcAddr)
             {
-                return false;  // Don't tunnel our own packets
+                return false;  // Don't process our own packets
             }
         }
+    }
+
+    // Record edge egress for ALL packets passing through this edge
+    // This captures egress regardless of destination (UE, other edge, etc.)
+    auto seq = ExtractZenohPayloadSeq(packet, false);
+    if (seq)
+    {
+        ZenohLatencyTracker::GetInstance().RecordHopEgress(*seq, m_edgeNodeId);
+        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " egress from Edge " << m_edgeNodeId
+                      << " (dst=" << dstAddr << ")");
+    }
+
+    // Look up if this destination should be tunneled to a UE (7.0.1.x subnet)
+    Ipv4Address ueAddr = LookupTunnelEndpoint(dstAddr);
+    if (ueAddr == Ipv4Address("0.0.0.0"))
+    {
+        // No tunnel mapping for this destination - packet will be routed normally
+        // Egress was already recorded above
+        return false;
     }
 
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Downstream: "
                   << srcAddr << " -> " << dstAddr << " via UE " << ueAddr
                   << " (size=" << packet->GetSize() << ")");
-
-    // Record edge egress - packet leaving edge to UE via 5G tunnel
-    // This is the EDGE_EGRESS point for this edge server
-    auto seq = ExtractZenohPayloadSeq(packet, false);
-    if (seq)
-    {
-        ZenohLatencyTracker::GetInstance().RecordHopEgress(*seq, m_edgeNodeId);
-        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " egress from Edge " << m_edgeNodeId);
-    }
 
     // Tunnel this packet to the UE
     SendToTunnel(packet, ueAddr);
