@@ -26,6 +26,7 @@ set(base_examples
     cttc-nr-simple-qos-sched
     cttc-nr-multi-flow-qos-sched
     gsoc-nr-channel-models
+    nr-baseline-latency
 )
 foreach(
   example
