@@ -13,8 +13,19 @@
  * - Per-packet latency measurement with CSV output
  * - Hexagonal grid topology with handover support
  * - Configurable mobility (linear or random waypoint)
+ * - REALISTIC HANDOVER INTERRUPTION MODEL
  * - FlowMonitor for aggregate statistics
  * - No external dependencies (pure NS-3 simulation)
+ *
+ * Handover Interruption Model:
+ *   Real 5G handover causes 30-100ms interruption where packets are buffered.
+ *   NS-3's ideal handover completes in ~2ms. This example adds configurable
+ *   artificial interruption (--handoverInterruptMs) to model realistic behavior.
+ *
+ *   During handover window:
+ *   - Packets are "buffered" at source gNB
+ *   - After handover, buffered packets are delivered with additional delay
+ *   - Latency = normal_latency + time_spent_in_buffer
  *
  * Network Topology:
  *
@@ -71,6 +82,12 @@ double g_minLatency = std::numeric_limits<double>::max();
 double g_maxLatency = 0.0;
 uint64_t g_handoverPacketCount = 0;
 
+// Handover interruption model parameters
+double g_handoverInterruptMs = 50.0;  // Total handover interruption time (ms)
+double g_networkDelayMs = 21.0;       // WAN + S1U delay (for calculating arrival at gNB)
+std::map<uint64_t, Time> g_handoverStartTime;  // IMSI -> actual handover start time
+std::map<uint64_t, Time> g_handoverEndTime;    // IMSI -> handover end time (start + interrupt)
+
 //==============================================================================
 // Callback Functions
 //==============================================================================
@@ -80,6 +97,9 @@ uint64_t g_handoverPacketCount = 0;
  *
  * This is the main latency measurement callback. It extracts the timestamp
  * from SeqTsSizeHeader (set at Remote Host) and calculates one-way latency.
+ *
+ * For packets sent during the handover window, we add artificial buffering
+ * delay to model realistic behavior where packets queue at source gNB.
  */
 void
 DlRxCallback(Ptr<const Packet> packet,
@@ -89,37 +109,70 @@ DlRxCallback(Ptr<const Packet> packet,
 {
     Time now = Simulator::Now();
     Time sendTime = header.GetTs();
-    Time latency = now - sendTime;
-    double latencyMs = latency.GetMilliSeconds();
+    Time baseLatency = now - sendTime;
+    double bufferingDelayMs = 0.0;
+    bool duringHandover = false;
+
+    // Calculate when packet arrives at source gNB (sendTime + network delay)
+    Time arrivalAtGnb = sendTime + MilliSeconds(g_networkDelayMs);
+
+    // Check if packet ARRIVES at gNB during handover window
+    // This correctly handles in-flight packets sent before handover started
+    if (g_handoverStartTime.count(g_ueImsi) > 0 && g_handoverEndTime.count(g_ueImsi) > 0)
+    {
+        Time hoStart = g_handoverStartTime[g_ueImsi];
+        Time hoEnd = g_handoverEndTime[g_ueImsi];
+
+        if (arrivalAtGnb >= hoStart && arrivalAtGnb <= hoEnd)
+        {
+            // Packet arrives at gNB during handover -> buffered
+            duringHandover = true;
+
+            // Buffering delay = time from arrival at gNB until handover completes
+            // (packet waits at source gNB until handover is done, then forwarded)
+            Time timeInBuffer = hoEnd - arrivalAtGnb;
+            bufferingDelayMs = timeInBuffer.GetMilliSeconds();
+        }
+    }
+
+    // Also check if handover is currently active (for real-time tracking)
+    if (!duringHandover && g_ueHandoverActive.count(g_ueImsi) && g_ueHandoverActive[g_ueImsi])
+    {
+        duringHandover = true;
+    }
+
+    // Total latency = base latency + buffering delay
+    double totalLatencyMs = baseLatency.GetMilliSeconds() + bufferingDelayMs;
 
     uint16_t cellId = g_ueServingCell.count(g_ueImsi) ? g_ueServingCell[g_ueImsi] : 0;
-    bool duringHandover = g_ueHandoverActive.count(g_ueImsi) ? g_ueHandoverActive[g_ueImsi] : false;
 
     // Write to CSV
     g_latencyCsv << std::fixed << std::setprecision(6)
                  << now.GetSeconds() << ","
                  << header.GetSeq() << ","
-                 << latencyMs << ","
+                 << totalLatencyMs << ","
                  << header.GetSize() << ","
                  << cellId << ","
-                 << (duringHandover ? 1 : 0) << "\n";
+                 << (duringHandover ? 1 : 0) << ","
+                 << bufferingDelayMs << "\n";
 
     // Update statistics
     g_packetCount++;
-    g_latencySum += latencyMs;
-    g_minLatency = std::min(g_minLatency, latencyMs);
-    g_maxLatency = std::max(g_maxLatency, latencyMs);
+    g_latencySum += totalLatencyMs;
+    g_minLatency = std::min(g_minLatency, totalLatencyMs);
+    g_maxLatency = std::max(g_maxLatency, totalLatencyMs);
 
     if (duringHandover)
     {
         g_handoverPacketCount++;
     }
 
-    // Debug output for first few packets
-    if (g_packetCount <= 5 || g_packetCount % 100 == 0)
+    // Debug output for first few packets and handover packets
+    if (g_packetCount <= 5 || g_packetCount % 100 == 0 || duringHandover)
     {
         NS_LOG_INFO(now.GetSeconds() << "s [RX] seq=" << header.GetSeq()
-                    << " latency=" << latencyMs << "ms"
+                    << " latency=" << totalLatencyMs << "ms"
+                    << (bufferingDelayMs > 0 ? " (buffered=" + std::to_string(bufferingDelayMs) + "ms)" : "")
                     << " cell=" << cellId
                     << (duringHandover ? " [HANDOVER]" : ""));
     }
@@ -127,6 +180,15 @@ DlRxCallback(Ptr<const Packet> packet,
 
 /**
  * @brief Callback when handover starts at the UE
+ *
+ * Sets up the handover window for realistic interruption modeling.
+ *
+ * The window accounts for:
+ * 1. In-flight packets: sent before handover but still in transit (WAN + radio delay)
+ * 2. Buffered packets: sent during handover, queued at source gNB
+ *
+ * Window: [now - inFlightTime, now + handoverInterruptMs]
+ * where inFlightTime ≈ WAN delay (packets already at gNB when handover starts)
  */
 void
 HandoverStartCallback(std::string path,
@@ -135,11 +197,19 @@ HandoverStartCallback(std::string path,
                       uint16_t rnti,
                       uint16_t targetCellId)
 {
+    Time now = Simulator::Now();
     g_ueHandoverActive[imsi] = true;
 
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+    // Set handover window: [now, now + handoverInterruptMs]
+    // Packets that ARRIVE at gNB during this window are buffered
+    // (arrival time = sendTime + networkDelay, checked in DlRxCallback)
+    g_handoverStartTime[imsi] = now;
+    g_handoverEndTime[imsi] = now + MilliSeconds(g_handoverInterruptMs);
+
+    NS_LOG_UNCOND(now.GetSeconds()
                   << "s [HANDOVER START] IMSI=" << imsi
-                  << " Cell " << sourceCellId << " -> " << targetCellId);
+                  << " Cell " << sourceCellId << " -> " << targetCellId
+                  << " (interrupt: " << g_handoverInterruptMs << "ms)");
 }
 
 /**
@@ -230,6 +300,9 @@ main(int argc, char* argv[])
     double wanDelayMs = 20.0;                // WAN delay in ms (one-way, central cloud)
     double s1uDelayMs = 1.0;                 // S1-U link delay in ms
 
+    // Handover interruption model
+    double handoverInterruptMs = 50.0;       // Handover interruption time in ms (realistic: 30-100ms)
+
     // Output
     std::string outputFile = "baseline_latency.csv";
     std::string simTag = "baseline";
@@ -264,6 +337,7 @@ main(int argc, char* argv[])
     // Network
     cmd.AddValue("wanDelayMs", "WAN delay in ms (one-way)", wanDelayMs);
     cmd.AddValue("s1uDelayMs", "S1-U link delay in ms", s1uDelayMs);
+    cmd.AddValue("handoverInterruptMs", "Handover interruption time in ms (realistic: 30-100ms)", handoverInterruptMs);
 
     // Output
     cmd.AddValue("outputFile", "CSV output filename", outputFile);
@@ -281,6 +355,10 @@ main(int argc, char* argv[])
         LogComponentEnable("NrBaselineLatency", LOG_LEVEL_INFO);
     }
 
+    // Update global handover interrupt parameters
+    g_handoverInterruptMs = handoverInterruptMs;
+    g_networkDelayMs = wanDelayMs + s1uDelayMs;  // Used to calculate packet arrival at gNB
+
     //--------------------------------------------------------------------------
     // Print configuration
     //--------------------------------------------------------------------------
@@ -292,6 +370,7 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("Scenario: " << scenario << ", ISD: " << isd << " m");
     NS_LOG_UNCOND("UE Speed: " << ueSpeed << " m/s (" << ueSpeed * 3.6 << " km/h)");
     NS_LOG_UNCOND("WAN Delay: " << wanDelayMs << " ms (one-way)");
+    NS_LOG_UNCOND("Handover Interruption: " << handoverInterruptMs << " ms");
     NS_LOG_UNCOND("Traffic: " << packetSize << " bytes every " << intervalMs << " ms");
     NS_LOG_UNCOND("Simulation: " << simTime << " s");
     NS_LOG_UNCOND("==============================================\n");
@@ -305,7 +384,7 @@ main(int argc, char* argv[])
     {
         NS_FATAL_ERROR("Cannot open CSV file: " << outputFile);
     }
-    g_latencyCsv << "timestamp_s,seq,latency_ms,size_bytes,cell_id,during_handover\n";
+    g_latencyCsv << "timestamp_s,seq,latency_ms,size_bytes,cell_id,during_handover,buffering_delay_ms\n";
 
     //--------------------------------------------------------------------------
     // Create hexagonal grid topology
