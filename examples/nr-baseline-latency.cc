@@ -472,10 +472,12 @@ main(int argc, char* argv[])
     CcBwpCreator::SimpleOperationBandConf bandConf(centralFrequency, bandwidth, 1);
     OperationBandInfo band = ccBwpCreator.CreateOperationBandContiguousCc(bandConf);
 
-    // Channel model
+    // Channel model with realistic propagation
+    // - "ThreeGpp" spectrum model enables fast fading (small-scale fading)
+    // - ShadowingEnabled adds slow fading (large-scale fading)
     Ptr<NrChannelHelper> channelHelper = CreateObject<NrChannelHelper>();
     channelHelper->ConfigureFactories(scenario, "Default", "ThreeGpp");
-    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
+    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(true));
     channelHelper->AssignChannelsToBands({band});
     allBwps = CcBwpCreator::GetAllBwps({band});
 
