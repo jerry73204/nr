@@ -12,11 +12,11 @@
  *   encapsulates in UDP, and sends through tunnel to UE via outer device
  *
  * Architecture (Ghost Node approach):
- *   PGW <--CSMA--> EdgeServer <--CSMA--> GhostNode <--TapBridge--> Docker
- *                      |
- *                EdgeTunnelApp
- *                - outerDevice: CSMA to PGW (tunnel packets arrive here)
- *                - innerDevice: CSMA to GhostNode (forwards to Docker)
+ *   PGW <--P2P--> EdgeServer <--CSMA--> GhostNode <--TapBridge--> Docker
+ *                     |
+ *               EdgeTunnelApp
+ *               - outerDevice: P2P to PGW (tunnel packets arrive here)
+ *               - innerDevice: CSMA to GhostNode (forwards to Docker)
  */
 
 #ifndef EDGE_TUNNEL_APP_H
@@ -37,7 +37,7 @@ namespace ns3
  * @brief Edge Server Tunnel Application
  *
  * Tunnels packets between External Router (via Ghost/tap) and UE (via PGW).
- * Uses two separate CSMA devices for clean packet flow.
+ * Uses P2P device (PGW side) and CSMA device (Ghost side) for clean packet flow.
  */
 class EdgeTunnelApp : public Application
 {
@@ -49,7 +49,7 @@ class EdgeTunnelApp : public Application
 
     /**
      * @brief Set the outer (PGW side) network device
-     * @param device The CSMA NetDevice connected to PGW (tunnel packets arrive here)
+     * @param device The P2P NetDevice connected to PGW (tunnel packets arrive here)
      */
     void SetOuterDevice(Ptr<NetDevice> device);
 
@@ -184,7 +184,7 @@ class EdgeTunnelApp : public Application
     // Tunnel UDP socket
     Ptr<Socket> m_tunnelSocket;
 
-    // Outer device (CSMA to PGW - where tunnel packets arrive)
+    // Outer device (P2P to PGW - where tunnel packets arrive)
     Ptr<NetDevice> m_outerDevice;
 
     // Inner device (CSMA to GhostNode - forwards to Docker via TapBridge)

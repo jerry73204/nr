@@ -782,18 +782,18 @@ main(int argc, char* argv[])
 
     for (uint32_t siteId = 0; siteId < numSites; ++siteId)
     {
-        CsmaHelper csma;
-        csma.SetChannelAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
-        csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(10)));
+        //----------------------------------------------------------------------
+        // P2P: PGW <-> EdgeServer
+        //----------------------------------------------------------------------
+        PointToPointHelper p2pPgwEdge;
+        p2pPgwEdge.SetDeviceAttribute("DataRate", StringValue("10Gbps"));
+        p2pPgwEdge.SetChannelAttribute("Delay", TimeValue(MicroSeconds(10)));
 
-        //----------------------------------------------------------------------
-        // CSMA1: PGW <-> EdgeServer
-        //----------------------------------------------------------------------
         NodeContainer pgwEdgeLink;
         pgwEdgeLink.Add(pgw);
         pgwEdgeLink.Add(edgeServerNodes.Get(siteId));
 
-        NetDeviceContainer pgwEdgeDevices = csma.Install(pgwEdgeLink);
+        NetDeviceContainer pgwEdgeDevices = p2pPgwEdge.Install(pgwEdgeLink);
 
         // IP: 10.{siteId+1}.0.0/24
         std::ostringstream subnet;
@@ -807,13 +807,17 @@ main(int argc, char* argv[])
         edgeServerOuterDevices.push_back(pgwEdgeDevices.Get(1));
 
         //----------------------------------------------------------------------
-        // CSMA2: EdgeServer <-> GhostNode (for tap bridge)
+        // CSMA: EdgeServer <-> GhostNode (for tap bridge)
         //----------------------------------------------------------------------
+        CsmaHelper csmaEdgeGhost;
+        csmaEdgeGhost.SetChannelAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
+        csmaEdgeGhost.SetChannelAttribute("Delay", TimeValue(MicroSeconds(10)));
+
         NodeContainer edgeGhostLink;
         edgeGhostLink.Add(edgeServerNodes.Get(siteId));
         edgeGhostLink.Add(ghostNodes.Get(siteId));
 
-        NetDeviceContainer edgeGhostDevices = csma.Install(edgeGhostLink);
+        NetDeviceContainer edgeGhostDevices = csmaEdgeGhost.Install(edgeGhostLink);
 
         // IP: 10.{siteId+1}.1.0/24 for EdgeServer only
         std::ostringstream ghostSubnet;
@@ -1122,17 +1126,17 @@ main(int argc, char* argv[])
 
         // Install EdgeTunnelApp on each edge server
         // Ghost Node Architecture:
-        //   PGW <--CSMA1--> EdgeServer <--CSMA2--> GhostNode <--TapBridge--> Docker
-        //                       |
-        //                  EdgeTunnelApp
-        //   - OuterDevice: EdgeServer's device on PGW-facing CSMA
-        //   - InnerDevice: EdgeServer's device on Ghost-facing CSMA
+        //   PGW <--P2P--> EdgeServer <--CSMA--> GhostNode <--TapBridge--> Docker
+        //                     |
+        //                EdgeTunnelApp
+        //   - OuterDevice: EdgeServer's P2P device facing PGW
+        //   - InnerDevice: EdgeServer's CSMA device facing GhostNode
         for (uint32_t siteId = 0; siteId < numSites && siteId < edgeServerInnerDevices.size(); ++siteId)
         {
             Ptr<EdgeTunnelApp> edgeTunnelApp = CreateObject<EdgeTunnelApp>();
 
             // Set both devices (both belong to EdgeServer node):
-            // - Outer: EdgeServer's CSMA device facing PGW (tunnel packets arrive here)
+            // - Outer: EdgeServer's P2P device facing PGW (tunnel packets arrive here)
             // - Inner: EdgeServer's CSMA device facing GhostNode (forwards to Docker)
             edgeTunnelApp->SetOuterDevice(edgeServerOuterDevices[siteId]);
             edgeTunnelApp->SetInnerDevice(edgeServerInnerDevices[siteId]);

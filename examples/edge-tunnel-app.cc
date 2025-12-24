@@ -155,13 +155,13 @@ EdgeTunnelApp::StartApplication()
 
     NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Started");
 
-    // Register promiscuous callback on OUTER device (PGW side)
+    // Register promiscuous callback on OUTER device (P2P to PGW)
     // This captures incoming tunnel packets from UE
     if (m_outerDevice)
     {
         m_outerDevice->SetPromiscReceiveCallback(
             MakeCallback(&EdgeTunnelApp::ReceiveFromOuter, this));
-        NS_LOG_UNCOND("  Outer device (PGW side): " << m_outerDevice->GetAddress());
+        NS_LOG_UNCOND("  Outer device (P2P to PGW): " << m_outerDevice->GetAddress());
     }
     else
     {
