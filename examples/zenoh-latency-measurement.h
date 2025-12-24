@@ -686,23 +686,15 @@ public:
 
         int64_t now = Simulator::Now().GetNanoSeconds();
         // Find the hop for this node and update egress time
-        // bool found = false;
         for (auto& hop : it->second.hops)
         {
             if (hop.nodeId == nodeId && hop.egressTimeNs == 0)
             {
                 hop.egressTimeNs = now;
                 it->second.lastEdgeNodeId = nodeId;
-                // found = true;
                 break;
             }
         }
-        // If no ingress entry exists, create one with ingress=egress (downstream only)
-        // if (!found)
-        // {
-        //     it->second.hops.emplace_back(nodeId, now, now);
-        //     it->second.lastEdgeNodeId = nodeId;
-        // }
     }
 
     /**

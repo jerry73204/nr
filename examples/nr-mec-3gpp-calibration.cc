@@ -787,7 +787,7 @@ main(int argc, char* argv[])
         //----------------------------------------------------------------------
         PointToPointHelper p2pPgwEdge;
         p2pPgwEdge.SetDeviceAttribute("DataRate", StringValue("10Gbps"));
-        p2pPgwEdge.SetChannelAttribute("Delay", TimeValue(MicroSeconds(10)));
+        p2pPgwEdge.SetChannelAttribute("Delay", TimeValue(MicroSeconds(1)));  // Co-located edge
 
         NodeContainer pgwEdgeLink;
         pgwEdgeLink.Add(pgw);
@@ -811,7 +811,7 @@ main(int argc, char* argv[])
         //----------------------------------------------------------------------
         CsmaHelper csmaEdgeGhost;
         csmaEdgeGhost.SetChannelAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
-        csmaEdgeGhost.SetChannelAttribute("Delay", TimeValue(MicroSeconds(10)));
+        csmaEdgeGhost.SetChannelAttribute("Delay", TimeValue(MicroSeconds(0)));  // Virtual link to TapBridge
 
         NodeContainer edgeGhostLink;
         edgeGhostLink.Add(edgeServerNodes.Get(siteId));
