@@ -78,6 +78,9 @@ public:
 
         // Write initial empty state
         WriteState(0, 0, Ipv4Address("0.0.0.0"), 0, 0.0);
+
+        // Write initial empty event file
+        WriteHandoverEvent(0, 0, 0, Ipv4Address("0.0.0.0"), Ipv4Address("0.0.0.0"), "init");
     }
 
     /**

@@ -489,7 +489,7 @@ main(int argc, char* argv[])
     double predictionWriteIntervalMs = 100.0;
 
     // Latency measurement
-    std::string latencyOutputPath = "zenoh_latency.csv";
+    std::string latencyOutputPath = "/tmp/zenoh_latency.csv";
     double slaThresholdMs = 50.0;
     uint16_t sourceEdgeNodeId = 5;  // Edge node that publishes critical data
 

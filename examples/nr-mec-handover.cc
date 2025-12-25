@@ -473,9 +473,9 @@ HandoverStartCallback(std::string path,
         NS_LOG_UNCOND("  Edge Server switching: " << sourceEdgeIp << " -> " << targetEdgeIp);
     }
 
-    // Write handover start event to file
-    // HandoverPredictionFile::GetInstance().WriteHandoverEvent(
-    //     imsi, sourceCellId, targetCellId, sourceEdgeIp, targetEdgeIp, "handover_start");
+    // Write handover start event to file (enables early notification)
+    HandoverPredictionFile::GetInstance().WriteHandoverEvent(
+        imsi, sourceCellId, targetCellId, sourceEdgeIp, targetEdgeIp, "handover_start");
 }
 
 /**

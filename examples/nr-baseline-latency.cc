@@ -294,7 +294,7 @@ main(int argc, char* argv[])
 
     // Traffic parameters (DL control commands only)
     uint32_t packetSize = 100;               // Control packet size in bytes
-    double intervalMs = 20.0;                // Packet interval in ms (50 Hz)
+    double intervalMs = 50.0;                // Packet interval in ms (50 Hz)
 
     // Network delays
     double wanDelayMs = 20.0;                // WAN delay in ms (one-way, central cloud)
@@ -304,7 +304,7 @@ main(int argc, char* argv[])
     double handoverInterruptMs = 50.0;       // Handover interruption time in ms (realistic: 30-100ms)
 
     // Output
-    std::string outputFile = "baseline_latency.csv";
+    std::string outputFile = "/tmp/baseline_latency.csv";
     std::string simTag = "baseline";
     bool logging = false;
 
