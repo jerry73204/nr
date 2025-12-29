@@ -99,7 +99,7 @@ UeTunnelApp::UpdateTunnelEndpoint(Ipv4Address newEdgeServerIp)
 
     if (m_edgeServerIp != newEdgeServerIp)
     {
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds()
                       << "s [UE_TUNNEL] Switching tunnel endpoint: "
                       << m_edgeServerIp << " -> " << newEdgeServerIp);
         m_edgeServerIp = newEdgeServerIp;
@@ -169,11 +169,11 @@ UeTunnelApp::StartApplication()
         m_innerDevice->SetPromiscReceiveCallback(
             MakeCallback(&UeTunnelApp::ReceiveFromInner, this));
 
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Started");
-        NS_LOG_UNCOND("  Inner device: " << m_innerDevice->GetAddress());
-        NS_LOG_UNCOND("  Tunnel endpoint: " << m_edgeServerIp << ":" << m_tunnelPort);
-        NS_LOG_UNCOND("  Local port: " << m_localPort);
-        NS_LOG_UNCOND("  Client subnet: " << m_clientSubnet << "/" << m_clientMask);
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Started");
+        NS_LOG_DEBUG("  Inner device: " << m_innerDevice->GetAddress());
+        NS_LOG_DEBUG("  Tunnel endpoint: " << m_edgeServerIp << ":" << m_tunnelPort);
+        NS_LOG_DEBUG("  Local port: " << m_localPort);
+        NS_LOG_DEBUG("  Client subnet: " << m_clientSubnet << "/" << m_clientMask);
     }
     else
     {
@@ -187,7 +187,7 @@ UeTunnelApp::StopApplication()
     NS_LOG_FUNCTION(this);
     m_running = false;
 
-    NS_LOG_UNCOND("[UE_TUNNEL] Stopped. TX=" << m_txPackets << " RX=" << m_rxPackets);
+    NS_LOG_DEBUG("[UE_TUNNEL] Stopped. TX=" << m_txPackets << " RX=" << m_rxPackets);
 
     if (m_tunnelSocket)
     {
@@ -267,11 +267,11 @@ UeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
     {
         Mac48Address srcMac = Mac48Address::ConvertFrom(source);
         m_learnedMacs[srcAddr.Get()] = srcMac;
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Learned MAC: "
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Learned MAC: "
                       << srcAddr << " -> " << srcMac);
     }
 
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Upstream: "
+    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Upstream: "
                   << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")");
 
     // Tunnel this packet - send the complete IP packet
@@ -305,7 +305,7 @@ UeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket)
     if (ret > 0)
     {
         m_txPackets++;
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Sent to tunnel: "
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Sent to tunnel: "
                       << tunnelPacket->GetSize() << " bytes -> " << m_edgeServerIp);
     }
     else
@@ -332,7 +332,7 @@ UeTunnelApp::ReceiveFromTunnel(Ptr<Socket> socket)
         if (InetSocketAddress::IsMatchingType(from))
         {
             InetSocketAddress address = InetSocketAddress::ConvertFrom(from);
-            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Received from tunnel: "
+            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Received from tunnel: "
                           << packet->GetSize() << " bytes from " << address.GetIpv4());
 
             m_rxPackets++;
@@ -351,7 +351,7 @@ UeTunnelApp::ReceiveFromTunnel(Ptr<Socket> socket)
 
                 if (latencyMs >= 0)
                 {
-                    NS_LOG_UNCOND("[UE_TUNNEL] Zenoh seq=" << *seq
+                    NS_LOG_DEBUG("[UE_TUNNEL] Zenoh seq=" << *seq
                                 << " latency=" << latencyMs << "ms");
 
                     if (latencyMs > 50.0)
@@ -393,7 +393,7 @@ UeTunnelApp::ForwardToInner(Ptr<Packet> packet)
     if (it != m_learnedMacs.end())
     {
         dstMac = it->second;
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Using learned MAC: "
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Using learned MAC: "
                       << dstAddr << " -> " << dstMac);
     }
     else
@@ -415,7 +415,7 @@ UeTunnelApp::ForwardToInner(Ptr<Packet> packet)
                         if (entry && entry->IsAlive())
                         {
                             dstMac = Mac48Address::ConvertFrom(entry->GetMacAddress());
-                            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] ARP resolved: "
+                            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] ARP resolved: "
                                           << dstAddr << " -> " << dstMac);
                         }
                     }
@@ -424,7 +424,7 @@ UeTunnelApp::ForwardToInner(Ptr<Packet> packet)
         }
     }
 
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Forward to inner: "
+    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Forward to inner: "
                   << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")"
                   << " dstMac=" << dstMac);
 

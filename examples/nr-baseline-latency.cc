@@ -399,6 +399,7 @@ main(int argc, char* argv[])
     gridScenario.SetScenarioParameters(scenarioParams);
     gridScenario.SetNumRings(numRings);
     gridScenario.SetUtNumber(1);  // Single UE (vehicle)
+    gridScenario.SetSimTag(simTag);
 
     if (mobilityModel == "linear")
     {

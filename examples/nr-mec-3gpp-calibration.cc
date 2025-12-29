@@ -447,7 +447,7 @@ RemoteHostPacketMonitor(Ptr<NetDevice> device,
         // Record send time at Remote Host (START of NS-3 path)
         // Use special node ID 0xFFFF for Remote Host
         ZenohLatencyTracker::GetInstance().RecordSend(*seq, ZenohLatencyTracker::NODE_REMOTE_HOST);
-        NS_LOG_UNCOND("[REMOTE_HOST] Zenoh seq=" << *seq << " enters NS-3");
+        NS_LOG_DEBUG("[REMOTE_HOST] Zenoh seq=" << *seq << " enters NS-3");
     }
 
     // Return false to allow normal packet processing
@@ -671,7 +671,7 @@ main(int argc, char* argv[])
             firstUeMobility->SetPosition(Vector(0.0, 50.0, 1.5));
             // Move purely in +Y direction toward Site 2
             firstUeMobility->SetVelocity(Vector(0.0, ueSpeed, 0.0));
-            NS_LOG_INFO("First UE positioned at (0, 50, 1.5) moving toward Site 2 at "
+            NS_LOG_INFO("First UE positioned at (0, 200, 1.5) moving toward Site 2 at "
                         << ueSpeed << " m/s (vx=0, vy=" << ueSpeed << ")");
         }
     }
@@ -732,18 +732,20 @@ main(int argc, char* argv[])
 
     //--------------------------------------------------------------------------
     // Build cell ID to site ID mapping
+    // NOTE: Only map by actual NR cell ID, not node index, to avoid collisions
+    // NR assigns cell IDs as 1, 3, 5, 7, ... (incrementing by 2 due to CsgId)
+    // Node indices 0-20 would collide with actual cell IDs if both were used as keys
     //--------------------------------------------------------------------------
-    for (uint32_t cellId = 0; cellId < numCells; ++cellId)
+    for (uint32_t nodeIdx = 0; nodeIdx < numCells; ++nodeIdx)
     {
-        uint16_t siteId = gridScenario.GetSiteIndex(cellId);
-        g_cellIdToSiteId[cellId] = siteId;
+        uint16_t siteId = gridScenario.GetSiteIndex(nodeIdx);
 
-        // Get actual cell ID from the device
-        Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(cellId)->GetObject<NrGnbNetDevice>();
+        // Get actual cell ID from the device (this is what RRC/handover uses)
+        Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(nodeIdx)->GetObject<NrGnbNetDevice>();
         uint16_t actualCellId = gnbNetDevice->GetCellId();
         g_cellIdToSiteId[actualCellId] = siteId;
 
-        NS_LOG_INFO("Cell " << cellId << " (actualCellId=" << actualCellId << ") -> Site " << siteId);
+        NS_LOG_INFO("Node " << nodeIdx << " (cellId=" << actualCellId << ") -> Site " << siteId);
     }
 
     //--------------------------------------------------------------------------
@@ -846,16 +848,14 @@ main(int argc, char* argv[])
         );
 
         // Map ALL cells of this site to this edge server
+        // NOTE: Only map by actual NR cell ID to avoid collisions with node indices
         for (uint32_t sector = 0; sector < 3; ++sector)
         {
-            uint32_t cellId = siteId * 3 + sector;
-            if (cellId < numCells)
+            uint32_t nodeIdx = siteId * 3 + sector;
+            if (nodeIdx < numCells)
             {
-                g_cellIdToEdgeServer[cellId] = edgeServerNodes.Get(siteId);
-                g_cellIdToEdgeServerIp[cellId] = edgeServerIp;
-
-                // Also map by actual cell ID
-                Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(cellId)->GetObject<NrGnbNetDevice>();
+                // Get actual cell ID from the device
+                Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(nodeIdx)->GetObject<NrGnbNetDevice>();
                 uint16_t actualCellId = gnbNetDevice->GetCellId();
                 g_cellIdToEdgeServer[actualCellId] = edgeServerNodes.Get(siteId);
                 g_cellIdToEdgeServerIp[actualCellId] = edgeServerIp;

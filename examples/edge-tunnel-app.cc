@@ -153,7 +153,7 @@ EdgeTunnelApp::StartApplication()
         // Socket callback is not used because we need L2 interception
     }
 
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Started");
+    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Started");
 
     // Register promiscuous callback on OUTER device (P2P to PGW)
     // This captures incoming tunnel packets from UE
@@ -161,7 +161,7 @@ EdgeTunnelApp::StartApplication()
     {
         m_outerDevice->SetPromiscReceiveCallback(
             MakeCallback(&EdgeTunnelApp::ReceiveFromOuter, this));
-        NS_LOG_UNCOND("  Outer device (P2P to PGW): " << m_outerDevice->GetAddress());
+        NS_LOG_DEBUG("  Outer device (P2P to PGW): " << m_outerDevice->GetAddress());
     }
     else
     {
@@ -174,7 +174,7 @@ EdgeTunnelApp::StartApplication()
     {
         m_innerDevice->SetPromiscReceiveCallback(
             MakeCallback(&EdgeTunnelApp::ReceiveFromInner, this));
-        NS_LOG_UNCOND("  Inner device (Ghost/tap side): " << m_innerDevice->GetAddress());
+        NS_LOG_DEBUG("  Inner device (Ghost/tap side): " << m_innerDevice->GetAddress());
     }
     else
     {
@@ -188,14 +188,14 @@ EdgeTunnelApp::StartApplication()
     {
         m_wanDevice->SetPromiscReceiveCallback(
             MakeCallback(&EdgeTunnelApp::ReceiveFromWan, this));
-        NS_LOG_UNCOND("  WAN device (Remote Host side): " << m_wanDevice->GetAddress());
+        NS_LOG_DEBUG("  WAN device (Remote Host side): " << m_wanDevice->GetAddress());
     }
 
-    NS_LOG_UNCOND("  Local port: " << m_localPort);
-    NS_LOG_UNCOND("  Tunnel mappings:");
+    NS_LOG_DEBUG("  Local port: " << m_localPort);
+    NS_LOG_DEBUG("  Tunnel mappings:");
     for (const auto& entry : m_tunnelMappings)
     {
-        NS_LOG_UNCOND("    " << entry.subnet << "/" << entry.mask << " -> " << entry.ueNrIp);
+        NS_LOG_DEBUG("    " << entry.subnet << "/" << entry.mask << " -> " << entry.ueNrIp);
     }
 }
 
@@ -205,7 +205,7 @@ EdgeTunnelApp::StopApplication()
     NS_LOG_FUNCTION(this);
     m_running = false;
 
-    NS_LOG_UNCOND("[EDGE_TUNNEL] Stopped. TX=" << m_txPackets << " RX=" << m_rxPackets);
+    NS_LOG_DEBUG("[EDGE_TUNNEL] Stopped. TX=" << m_txPackets << " RX=" << m_rxPackets);
 
     if (m_tunnelSocket)
     {
@@ -267,7 +267,7 @@ EdgeTunnelApp::ReceiveFromOuter(Ptr<NetDevice> device,
     if (seq)
     {
         ZenohLatencyTracker::GetInstance().RecordHopIngress(*seq, m_edgeNodeId);
-        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " ingress at Edge " << m_edgeNodeId
+        NS_LOG_DEBUG("[EDGE_TUNNEL] Zenoh seq=" << *seq << " ingress at Edge " << m_edgeNodeId
                       << " (from " << srcAddr << ")");
     }
 
@@ -296,7 +296,7 @@ EdgeTunnelApp::ReceiveFromOuter(Ptr<NetDevice> device,
         if (udpHeader.GetDestinationPort() == m_localPort)
         {
             // This is an incoming tunnel packet from UE!
-            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Received from tunnel: "
+            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Received from tunnel: "
                           << pktCopy->GetSize() << " bytes from " << srcAddr);
 
             m_rxPackets++;
@@ -348,7 +348,7 @@ EdgeTunnelApp::ReceiveFromWan(Ptr<NetDevice> device,
     if (seq)
     {
         ZenohLatencyTracker::GetInstance().RecordHopIngress(*seq, m_edgeNodeId);
-        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " ingress at Edge " << m_edgeNodeId
+        NS_LOG_DEBUG("[EDGE_TUNNEL] Zenoh seq=" << *seq << " ingress at Edge " << m_edgeNodeId
                       << " via WAN (from " << srcAddr << ")");
     }
 
@@ -394,7 +394,7 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
         if (m_learnedMacs.find(srcAddr.Get()) == m_learnedMacs.end())
         {
             m_learnedMacs[srcAddr.Get()] = srcMac;
-            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Learned MAC: "
+            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Learned MAC: "
                           << srcAddr << " -> " << srcMac);
         }
     }
@@ -418,7 +418,7 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
     if (seq)
     {
         ZenohLatencyTracker::GetInstance().RecordHopEgress(*seq, m_edgeNodeId);
-        NS_LOG_UNCOND("[EDGE_TUNNEL] Zenoh seq=" << *seq << " egress from Edge " << m_edgeNodeId
+        NS_LOG_DEBUG("[EDGE_TUNNEL] Zenoh seq=" << *seq << " egress from Edge " << m_edgeNodeId
                       << " (dst=" << dstAddr << ")");
     }
 
@@ -431,7 +431,7 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
         return false;
     }
 
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Downstream: "
+    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Downstream: "
                   << srcAddr << " -> " << dstAddr << " via UE " << ueAddr
                   << " (size=" << packet->GetSize() << ")");
 
@@ -462,12 +462,12 @@ EdgeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket, Ipv4Address ueAddr)
     if (ret > 0)
     {
         m_txPackets++;
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Sent to tunnel: "
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Sent to tunnel: "
                       << tunnelPacket->GetSize() << " bytes -> " << ueAddr);
     }
     else
     {
-        NS_LOG_UNCOND("[EDGE_TUNNEL] ERROR: Failed to send to tunnel, ret=" << ret);
+        NS_LOG_DEBUG("[EDGE_TUNNEL] ERROR: Failed to send to tunnel, ret=" << ret);
     }
 }
 
@@ -491,7 +491,7 @@ EdgeTunnelApp::ReceiveFromTunnel(Ptr<Socket> socket)
         if (InetSocketAddress::IsMatchingType(from))
         {
             InetSocketAddress address = InetSocketAddress::ConvertFrom(from);
-            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Received from tunnel: "
+            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Received from tunnel: "
                           << packet->GetSize() << " bytes from " << address.GetIpv4());
 
             m_rxPackets++;
@@ -529,7 +529,7 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
 
         if ((dstVal & maskVal) != (subnetVal & maskVal))
         {
-            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] DROP: "
+            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] DROP: "
                           << dstAddr << " not on inner subnet " << m_innerSubnet << "/"
                           << m_innerMask << " - connection should break after handover");
             return;
@@ -544,7 +544,7 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
     if (it != m_learnedMacs.end())
     {
         dstMac = it->second;
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Using learned MAC: "
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Using learned MAC: "
                       << dstAddr << " -> " << dstMac);
     }
     else
@@ -566,7 +566,7 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
                         if (entry && entry->IsAlive())
                         {
                             dstMac = Mac48Address::ConvertFrom(entry->GetMacAddress());
-                            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] ARP resolved: "
+                            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] ARP resolved: "
                                           << dstAddr << " -> " << dstMac);
                         }
                     }
@@ -575,7 +575,7 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
         }
     }
 
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Forward to inner: "
+    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Forward to inner: "
                   << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")"
                   << " IP hdr=" << headerSize << " bytes, proto=" << (int)ipHeader.GetProtocol()
                   << " dstMac=" << dstMac << " via device " << m_innerDevice->GetAddress());
@@ -585,11 +585,11 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
 
     if (success)
     {
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Send success on inner device");
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Send success on inner device");
     }
     else
     {
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] ERROR: Send failed on inner device!");
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] ERROR: Send failed on inner device!");
     }
 }
 
