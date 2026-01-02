@@ -82,6 +82,10 @@ double g_minLatency = std::numeric_limits<double>::max();
 double g_maxLatency = 0.0;
 uint64_t g_handoverPacketCount = 0;
 
+// SLA tracking
+double g_slaThresholdMs = 50.0;    // SLA threshold in ms (default: 50ms for remote driving)
+uint64_t g_slaViolationCount = 0;  // Count of packets exceeding SLA threshold
+
 // Handover interruption model parameters
 double g_handoverInterruptMs = 50.0;  // Total handover interruption time (ms)
 double g_networkDelayMs = 21.0;       // WAN + S1U delay (for calculating arrival at gNB)
@@ -146,6 +150,9 @@ DlRxCallback(Ptr<const Packet> packet,
 
     uint16_t cellId = g_ueServingCell.count(g_ueImsi) ? g_ueServingCell[g_ueImsi] : 0;
 
+    // Check SLA violation (needed for CSV before statistics update)
+    bool slaViolation = totalLatencyMs > g_slaThresholdMs;
+
     // Write to CSV
     g_latencyCsv << std::fixed << std::setprecision(6)
                  << now.GetSeconds() << ","
@@ -154,27 +161,33 @@ DlRxCallback(Ptr<const Packet> packet,
                  << header.GetSize() << ","
                  << cellId << ","
                  << (duringHandover ? 1 : 0) << ","
-                 << bufferingDelayMs << "\n";
+                 << bufferingDelayMs << ","
+                 << (slaViolation ? 1 : 0) << "\n";
 
     // Update statistics
     g_packetCount++;
     g_latencySum += totalLatencyMs;
     g_minLatency = std::min(g_minLatency, totalLatencyMs);
     g_maxLatency = std::max(g_maxLatency, totalLatencyMs);
+    if (slaViolation)
+    {
+        g_slaViolationCount++;
+    }
 
     if (duringHandover)
     {
         g_handoverPacketCount++;
     }
 
-    // Debug output for first few packets and handover packets
-    if (g_packetCount <= 5 || g_packetCount % 100 == 0 || duringHandover)
+    // Debug output for first few packets, periodic, handover, and SLA violations
+    if (g_packetCount <= 5 || g_packetCount % 100 == 0 || duringHandover || slaViolation)
     {
         NS_LOG_INFO(now.GetSeconds() << "s [RX] seq=" << header.GetSeq()
                     << " latency=" << totalLatencyMs << "ms"
                     << (bufferingDelayMs > 0 ? " (buffered=" + std::to_string(bufferingDelayMs) + "ms)" : "")
                     << " cell=" << cellId
-                    << (duringHandover ? " [HANDOVER]" : ""));
+                    << (duringHandover ? " [HANDOVER]" : "")
+                    << (slaViolation ? " [SLA VIOLATION]" : ""));
     }
 }
 
@@ -301,7 +314,10 @@ main(int argc, char* argv[])
     double s1uDelayMs = 1.0;                 // S1-U link delay in ms
 
     // Handover interruption model
-    double handoverInterruptMs = 50.0;       // Handover interruption time in ms (realistic: 30-100ms)
+    double handoverInterruptMs = 30.0;       // Handover interruption time in ms (realistic: 30-100ms)
+
+    // SLA parameters
+    double slaThresholdMs = 50.0;            // SLA threshold in ms (remote driving: 50ms)
 
     // Output
     std::string outputFile = "/tmp/baseline_latency.csv";
@@ -339,6 +355,9 @@ main(int argc, char* argv[])
     cmd.AddValue("s1uDelayMs", "S1-U link delay in ms", s1uDelayMs);
     cmd.AddValue("handoverInterruptMs", "Handover interruption time in ms (realistic: 30-100ms)", handoverInterruptMs);
 
+    // SLA
+    cmd.AddValue("slaThresholdMs", "SLA latency threshold in ms (violation if exceeded)", slaThresholdMs);
+
     // Output
     cmd.AddValue("outputFile", "CSV output filename", outputFile);
     cmd.AddValue("simTag", "Simulation tag for output files", simTag);
@@ -355,9 +374,10 @@ main(int argc, char* argv[])
         LogComponentEnable("NrBaselineLatency", LOG_LEVEL_INFO);
     }
 
-    // Update global handover interrupt parameters
+    // Update global parameters
     g_handoverInterruptMs = handoverInterruptMs;
     g_networkDelayMs = wanDelayMs + s1uDelayMs;  // Used to calculate packet arrival at gNB
+    g_slaThresholdMs = slaThresholdMs;
 
     //--------------------------------------------------------------------------
     // Print configuration
@@ -371,6 +391,7 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("UE Speed: " << ueSpeed << " m/s (" << ueSpeed * 3.6 << " km/h)");
     NS_LOG_UNCOND("WAN Delay: " << wanDelayMs << " ms (one-way)");
     NS_LOG_UNCOND("Handover Interruption: " << handoverInterruptMs << " ms");
+    NS_LOG_UNCOND("SLA Threshold: " << slaThresholdMs << " ms");
     NS_LOG_UNCOND("Traffic: " << packetSize << " bytes every " << intervalMs << " ms");
     NS_LOG_UNCOND("Simulation: " << simTime << " s");
     NS_LOG_UNCOND("==============================================\n");
@@ -384,7 +405,7 @@ main(int argc, char* argv[])
     {
         NS_FATAL_ERROR("Cannot open CSV file: " << outputFile);
     }
-    g_latencyCsv << "timestamp_s,seq,latency_ms,size_bytes,cell_id,during_handover,buffering_delay_ms\n";
+    g_latencyCsv << "timestamp_s,seq,latency_ms,size_bytes,cell_id,during_handover,buffering_delay_ms,sla_violation\n";
 
     //--------------------------------------------------------------------------
     // Create hexagonal grid topology
@@ -635,11 +656,17 @@ main(int argc, char* argv[])
     if (g_packetCount > 0)
     {
         double avgLatency = g_latencySum / g_packetCount;
+        double slaViolationRate = (100.0 * g_slaViolationCount) / g_packetCount;
+
         NS_LOG_UNCOND("Packets received: " << g_packetCount);
         NS_LOG_UNCOND("Average latency: " << std::fixed << std::setprecision(3) << avgLatency << " ms");
         NS_LOG_UNCOND("Min latency: " << g_minLatency << " ms");
         NS_LOG_UNCOND("Max latency: " << g_maxLatency << " ms");
         NS_LOG_UNCOND("Packets during handover: " << g_handoverPacketCount);
+        NS_LOG_UNCOND("----------------------------------------------");
+        NS_LOG_UNCOND("SLA Threshold: " << g_slaThresholdMs << " ms");
+        NS_LOG_UNCOND("SLA Violations: " << g_slaViolationCount
+                      << " (" << std::fixed << std::setprecision(2) << slaViolationRate << "%)");
     }
     else
     {
