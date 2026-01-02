@@ -84,6 +84,16 @@ std::map<uint16_t, uint16_t> g_cellIdToSiteId;
 // Current serving cell for each UE (for tracking)
 std::map<uint64_t, uint16_t> g_ueCurrentServingCell;
 
+//==============================================================================
+// Handover Blackout Model (from nr-baseline-latency.cc)
+//==============================================================================
+
+// Handover interruption model parameters
+double g_handoverInterruptMs = 50.0;  // Total handover interruption time (ms)
+double g_networkDelayMs = 20.0;       // WAN delay (for calculating arrival at gNB)
+std::map<uint64_t, Time> g_handoverStartTime;  // IMSI -> actual handover start time
+std::map<uint64_t, Time> g_handoverEndTime;    // IMSI -> handover end time (start + interrupt)
+
 // Structure to store measurement history for prediction
 struct MeasurementHistory
 {
@@ -285,22 +295,31 @@ HandoverStartCallback(std::string path,
                       uint16_t rnti,
                       uint16_t targetCellId)
 {
+    Time now = Simulator::Now();
+
     // Update current serving cell before handover completes
     // This ensures HandoverEndOkCallback knows the previous cell
     g_ueCurrentServingCell[imsi] = sourceCellId;
 
+    // Set handover window for blackout model: [now, now + handoverInterruptMs]
+    // Packets that ARRIVE at gNB during this window will experience buffering delay
+    g_handoverStartTime[imsi] = now;
+    g_handoverEndTime[imsi] = now + MilliSeconds(g_handoverInterruptMs);
+
     uint16_t sourceSite = g_cellIdToSiteId.count(sourceCellId) ? g_cellIdToSiteId[sourceCellId] : 0;
     uint16_t targetSite = g_cellIdToSiteId.count(targetCellId) ? g_cellIdToSiteId[targetCellId] : 0;
 
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds()
+    NS_LOG_UNCOND(now.GetSeconds()
                   << "s [HANDOVER START] IMSI=" << imsi
                   << " Cell " << sourceCellId << " (Site " << sourceSite << ")"
-                  << " -> Cell " << targetCellId << " (Site " << targetSite << ")");
+                  << " -> Cell " << targetCellId << " (Site " << targetSite << ")"
+                  << " (interrupt: " << g_handoverInterruptMs << "ms)");
 
-    // Mark handover as active for latency measurement
+    // Mark handover as active and set handover window for latency measurement
     if (g_ueTunnelApps.count(imsi) > 0 && g_ueTunnelApps[imsi])
     {
         g_ueTunnelApps[imsi]->SetHandoverActive(true);
+        g_ueTunnelApps[imsi]->SetHandoverWindow(now, g_handoverEndTime[imsi], g_networkDelayMs);
     }
 
     if (sourceSite != targetSite)
@@ -311,6 +330,10 @@ HandoverStartCallback(std::string path,
             g_cellIdToEdgeServerIp[targetCellId] : Ipv4Address("0.0.0.0");
 
         NS_LOG_UNCOND("  Inter-site handover: Edge " << sourceEdgeIp << " -> " << targetEdgeIp);
+
+        // Write handover start event to file
+        HandoverPredictionFile::GetInstance().WriteHandoverEvent(
+            imsi, sourceCellId, targetCellId, sourceEdgeIp, targetEdgeIp, "handover_start");
     }
     else
     {
@@ -500,6 +523,9 @@ main(int argc, char* argv[])
     std::string wanDataRate = "1Gbps";  // WAN link data rate
     uint16_t remoteHostEdgeId = 5;   // Edge server to connect remote host to
 
+    // Handover blackout model
+    double handoverInterruptMs = 30.0;  // Handover interruption time (realistic: 30-100ms)
+
     // Other
     bool logging = true;
 
@@ -544,10 +570,17 @@ main(int argc, char* argv[])
     cmd.AddValue("wanDataRate", "WAN link data rate (e.g., 1Gbps)", wanDataRate);
     cmd.AddValue("remoteHostEdgeId", "Edge server ID to connect remote host to", remoteHostEdgeId);
 
+    // Handover blackout model
+    cmd.AddValue("handoverInterruptMs", "Handover interruption time in ms (realistic: 30-100ms)", handoverInterruptMs);
+
     // Other
     cmd.AddValue("logging", "Enable detailed logging", logging);
 
     cmd.Parse(argc, argv);
+
+    // Update global handover interrupt parameters
+    g_handoverInterruptMs = handoverInterruptMs;
+    g_networkDelayMs = wanDelayMs;  // Used to calculate packet arrival at gNB
 
     // Initialize handover prediction file system
     HandoverPredictionFile::GetInstance().Initialize(
@@ -580,6 +613,7 @@ main(int argc, char* argv[])
     NS_LOG_INFO("ISD: " << isd << " m");
     NS_LOG_INFO("UEs: " << numUes);
     NS_LOG_INFO("Mobility: " << mobilityModel << " at " << ueSpeed << " m/s");
+    NS_LOG_INFO("Handover Blackout: " << handoverInterruptMs << " ms (WAN=" << wanDelayMs << "ms)");
     NS_LOG_INFO("==============================================");
 
     //--------------------------------------------------------------------------

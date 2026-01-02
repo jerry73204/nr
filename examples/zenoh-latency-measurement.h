@@ -700,8 +700,13 @@ public:
     /**
      * @brief Record when a packet arrives at UE (END point)
      * Only records the receive time - no hop entry for UE itself
+     *
+     * @param zenohSn Zenoh sequence number from payload
+     * @param handoverActive Whether handover is in progress
+     * @param bufferingDelayMs Additional buffering delay from handover blackout model (default 0)
+     * @return Total latency in milliseconds including buffering delay
      */
-    double RecordReceive(uint32_t zenohSn, bool handoverActive = false)
+    double RecordReceive(uint32_t zenohSn, bool handoverActive = false, double bufferingDelayMs = 0.0)
     {
         if (!m_initialized) return -1.0;
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -712,7 +717,10 @@ public:
         int64_t sendTimeNs = it->second.sendTimeNs;
         uint16_t edgeNodeId = it->second.lastEdgeNodeId;
         int64_t recvTimeNs = Simulator::Now().GetNanoSeconds();
-        double latencyMs = (recvTimeNs - sendTimeNs) / 1e6;
+        double baseLatencyMs = (recvTimeNs - sendTimeNs) / 1e6;
+
+        // Total latency = base latency + handover buffering delay
+        double latencyMs = baseLatencyMs + bufferingDelayMs;
         bool slaViolation = latencyMs > m_slaThresholdMs;
 
         // No hop entry for UE - we only care about edge-to-edge timestamps
@@ -751,6 +759,20 @@ public:
 
         m_pendingSends.erase(it);
         return latencyMs;
+    }
+
+    /**
+     * @brief Get send time for a pending packet (for buffering delay calculation)
+     * @param zenohSn Zenoh sequence number
+     * @return Send time in nanoseconds, or -1 if not found
+     */
+    int64_t GetSendTimeNs(uint32_t zenohSn) const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::string key = "seq:" + std::to_string(zenohSn);
+        auto it = m_pendingSends.find(key);
+        if (it == m_pendingSends.end()) return -1;
+        return it->second.sendTimeNs;
     }
 
     bool IsFromSourceEdge(uint16_t edgeNodeId) const { return edgeNodeId == m_sourceEdgeNodeId; }
@@ -834,7 +856,7 @@ private:
     uint16_t m_sourceEdgeNodeId = 5;
 
     std::map<std::string, SendRecord> m_pendingSends;
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     std::ofstream m_csvFile;
 
     uint64_t m_totalPackets = 0;

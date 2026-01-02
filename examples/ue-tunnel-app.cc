@@ -43,7 +43,11 @@ UeTunnelApp::UeTunnelApp()
       m_running(false),
       m_txPackets(0),
       m_rxPackets(0),
-      m_handoverActive(false)
+      m_handoverActive(false),
+      m_handoverStartTime(Time(0)),
+      m_handoverEndTime(Time(0)),
+      m_networkDelayMs(20.0),
+      m_handoverWindowValid(false)
 {
     NS_LOG_FUNCTION(this);
 }
@@ -117,6 +121,57 @@ UeTunnelApp::SetHandoverActive(bool active)
 {
     NS_LOG_FUNCTION(this << active);
     m_handoverActive = active;
+
+    // Clear handover window when handover ends
+    if (!active)
+    {
+        m_handoverWindowValid = false;
+    }
+}
+
+void
+UeTunnelApp::SetHandoverWindow(Time hoStart, Time hoEnd, double networkDelayMs)
+{
+    NS_LOG_FUNCTION(this << hoStart.GetSeconds() << hoEnd.GetSeconds() << networkDelayMs);
+    m_handoverStartTime = hoStart;
+    m_handoverEndTime = hoEnd;
+    m_networkDelayMs = networkDelayMs;
+    m_handoverWindowValid = true;
+
+    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Handover window set: "
+                  << hoStart.GetSeconds() << "s - " << hoEnd.GetSeconds() << "s"
+                  << " (networkDelay=" << networkDelayMs << "ms)");
+}
+
+double
+UeTunnelApp::CalculateBufferingDelay(int64_t sendTimeNs) const
+{
+    if (!m_handoverWindowValid)
+    {
+        return 0.0;
+    }
+
+    // Calculate when packet arrives at gNB (sendTime + networkDelay)
+    Time sendTime = NanoSeconds(sendTimeNs);
+    Time arrivalAtGnb = sendTime + MilliSeconds(m_networkDelayMs);
+
+    // Check if packet ARRIVES at gNB during handover window
+    if (arrivalAtGnb >= m_handoverStartTime && arrivalAtGnb <= m_handoverEndTime)
+    {
+        // Packet arrives at gNB during handover -> buffered
+        // Buffering delay = time from arrival at gNB until handover completes
+        Time timeInBuffer = m_handoverEndTime - arrivalAtGnb;
+        double bufferingDelayMs = timeInBuffer.GetMilliSeconds();
+
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Packet sent at "
+                      << sendTime.GetSeconds() << "s arrives at gNB at "
+                      << arrivalAtGnb.GetSeconds() << "s (during HO window)"
+                      << " -> buffering delay=" << bufferingDelayMs << "ms");
+
+        return bufferingDelayMs;
+    }
+
+    return 0.0;
 }
 
 void
@@ -346,18 +401,28 @@ UeTunnelApp::ReceiveFromTunnel(Ptr<Socket> socket)
             auto seq = ExtractZenohPayloadSeq(packet, enableDebug);
             if (seq)
             {
+                // Calculate buffering delay if packet was sent during handover window
+                double bufferingDelayMs = 0.0;
+                int64_t sendTimeNs = ZenohLatencyTracker::GetInstance().GetSendTimeNs(*seq);
+                if (sendTimeNs >= 0)
+                {
+                    bufferingDelayMs = CalculateBufferingDelay(sendTimeNs);
+                }
+
                 double latencyMs = ZenohLatencyTracker::GetInstance().RecordReceive(
-                    *seq, m_handoverActive);
+                    *seq, m_handoverActive, bufferingDelayMs);
 
                 if (latencyMs >= 0)
                 {
                     NS_LOG_DEBUG("[UE_TUNNEL] Zenoh seq=" << *seq
-                                << " latency=" << latencyMs << "ms");
+                                << " latency=" << latencyMs << "ms"
+                                << (bufferingDelayMs > 0 ? " (buffered=" + std::to_string(bufferingDelayMs) + "ms)" : ""));
 
                     if (latencyMs > 50.0)
                     {
                         NS_LOG_WARN("[SLA VIOLATION] seq=" << *seq
-                                    << " latency=" << latencyMs << "ms > 50ms");
+                                    << " latency=" << latencyMs << "ms > 50ms"
+                                    << (bufferingDelayMs > 0 ? " (buffered=" + std::to_string(bufferingDelayMs) + "ms)" : ""));
                     }
                 }
             }

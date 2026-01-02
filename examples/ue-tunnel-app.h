@@ -83,6 +83,29 @@ class UeTunnelApp : public Application
      */
     void SetHandoverActive(bool active);
 
+    /**
+     * @brief Set handover window for blackout model
+     *
+     * Sets up the handover interruption window for realistic latency modeling.
+     * Packets arriving at gNB during this window experience buffering delay.
+     *
+     * @param hoStart Handover start time
+     * @param hoEnd Handover end time (start + handoverInterruptMs)
+     * @param networkDelayMs Network delay to calculate arrival time at gNB
+     */
+    void SetHandoverWindow(Time hoStart, Time hoEnd, double networkDelayMs);
+
+    /**
+     * @brief Calculate buffering delay for a packet based on handover window
+     *
+     * If packet arrival at gNB falls within handover window, returns the time
+     * it would have spent buffered at source gNB waiting for handover to complete.
+     *
+     * @param sendTimeNs Packet send time in nanoseconds
+     * @return Buffering delay in milliseconds (0 if not during handover)
+     */
+    double CalculateBufferingDelay(int64_t sendTimeNs) const;
+
   protected:
     void DoDispose() override;
 
@@ -152,6 +175,12 @@ class UeTunnelApp : public Application
 
     // Handover state for latency measurement
     bool m_handoverActive;
+
+    // Handover blackout model parameters
+    Time m_handoverStartTime;      // When handover started
+    Time m_handoverEndTime;        // When handover window ends
+    double m_networkDelayMs;       // Network delay (WAN + S1U) for arrival calculation
+    bool m_handoverWindowValid;    // Whether handover window is set
 };
 
 } // namespace ns3
