@@ -7,6 +7,7 @@
 
 #include "node-distribution-scenario-interface.h"
 
+#include "ns3/mobility-helper.h"
 #include "ns3/random-variable-stream.h"
 #include "ns3/vector.h"
 
@@ -95,6 +96,17 @@ class HexagonalGridScenarioHelper : public NodeDistributionScenarioInterface
      * @param percentage Percentage (decimal) of UEs with random antenna height > 1.5 m
      */
     void CreateScenarioWithMobility(const Vector& speed, double percentage);
+
+    /**
+     * @brief Create scenario with custom UE mobility model
+     *
+     * This allows using mobility models like WaypointMobilityModel that need
+     * custom configuration. The provided MobilityHelper should be fully configured
+     * with the desired mobility model and position allocator.
+     *
+     * @param ueMobilityHelper Pre-configured MobilityHelper for UEs
+     */
+    void CreateScenarioWithCustomMobility(MobilityHelper& ueMobilityHelper);
 
     /**
      * Assign a fixed random variable stream number to the random variables

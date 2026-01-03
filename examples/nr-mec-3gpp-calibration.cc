@@ -580,6 +580,9 @@ LogUeTrajectory(NodeContainer ueNodes, double interval)
                          << servingCell << "," << siteId << "\n";
     }
 
+    // Flush to ensure data is written even if simulation crashes
+    g_trajectoryFile.flush();
+
     // Schedule next logging
     Simulator::Schedule(Seconds(interval), &LogUeTrajectory, ueNodes, interval);
 }
@@ -597,6 +600,7 @@ main(int argc, char* argv[])
     double isd = 500.0;                          // Inter-site distance in meters
     uint32_t numUes = 1;                         // Number of UEs
     double maxUeDistance = 1000.0;               // Max UE distance to closest site
+    bool extendedCoverage = false;               // Extended coverage: outer ring shares inner edges
 
     // Mobility parameters
     std::string mobilityModel = "linear";        // linear, random, gauss-markov, waypoint
@@ -648,11 +652,12 @@ main(int argc, char* argv[])
     CommandLine cmd(__FILE__);
 
     // Topology
-    cmd.AddValue("numRings", "Number of hexagonal rings (0=1 site, 1=7 sites, 2=19 sites)", numRings);
+    cmd.AddValue("numRings", "Number of hexagonal rings (0=1 site, 1=7 sites, 2=13 sites)", numRings);
     cmd.AddValue("scenario", "Propagation scenario (UMa, RMa, UMi)", scenario);
     cmd.AddValue("isd", "Inter-site distance in meters", isd);
     cmd.AddValue("numUes", "Number of UEs", numUes);
     cmd.AddValue("maxUeDistance", "Max UE distance to closest site", maxUeDistance);
+    cmd.AddValue("extendedCoverage", "Extended coverage: outer ring sites share inner edge servers", extendedCoverage);
 
     // Mobility
     cmd.AddValue("mobilityModel", "UE mobility model (linear, random, gauss-markov, waypoint)", mobilityModel);
@@ -733,7 +738,7 @@ main(int argc, char* argv[])
     NS_LOG_INFO("==============================================");
     NS_LOG_INFO("NR MEC 3GPP Calibration Simulation");
     NS_LOG_INFO("==============================================");
-    NS_LOG_INFO("Rings: " << (int)numRings << " (" << (numRings == 0 ? 1 : (numRings == 1 ? 7 : 19)) << " sites)");
+    NS_LOG_INFO("Rings: " << (int)numRings << " (sites will be determined by scenario helper)");
     NS_LOG_INFO("Scenario: " << scenario);
     NS_LOG_INFO("ISD: " << isd << " m");
     NS_LOG_INFO("UEs: " << numUes);
@@ -804,8 +809,26 @@ main(int argc, char* argv[])
     }
     else if (mobilityModel == "waypoint")
     {
-        // Create static scenario first
-        gridScenario.CreateScenario();
+        // Determine initial position based on path
+        Vector startPos(0, 50, 1.5);  // Default start position
+        if (builtinPath == "highway")
+        {
+            startPos = Vector(-400, -400, 1.5);
+        }
+        else if (builtinPath == "urban-grid")
+        {
+            startPos = Vector(-200, -200, 1.5);
+        }
+
+        // Configure MobilityHelper with WaypointMobilityModel
+        MobilityHelper waypointHelper;
+        waypointHelper.SetMobilityModel("ns3::WaypointMobilityModel");
+        Ptr<ListPositionAllocator> posAlloc = CreateObject<ListPositionAllocator>();
+        posAlloc->Add(startPos);
+        waypointHelper.SetPositionAllocator(posAlloc);
+
+        // Create scenario with custom mobility (no aggregation issues)
+        gridScenario.CreateScenarioWithCustomMobility(waypointHelper);
 
         NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
 
@@ -818,13 +841,18 @@ main(int argc, char* argv[])
         }
         else
         {
-            // Use built-in predefined path
-            Ptr<WaypointMobilityModel> waypointMm = CreateObject<WaypointMobilityModel>();
+            // Get the installed WaypointMobilityModel and add waypoints
+            Ptr<WaypointMobilityModel> waypointMm =
+                ueNodesTemp.Get(0)->GetObject<WaypointMobilityModel>();
+
+            if (!waypointMm)
+            {
+                NS_FATAL_ERROR("Failed to get WaypointMobilityModel from UE");
+            }
 
             if (builtinPath == "hexagonal")
             {
                 // Circular path visiting all sites (triggers multiple handovers)
-                // Site positions: 0(0,0), 1(433,250), 2(0,500), 3(-433,250), etc.
                 waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
                 waypointMm->AddWaypoint(Waypoint(Seconds(30), Vector(200, 200, 1.5)));
                 waypointMm->AddWaypoint(Waypoint(Seconds(60), Vector(0, 400, 1.5)));
@@ -837,8 +865,7 @@ main(int argc, char* argv[])
             }
             else if (builtinPath == "linear-y")
             {
-                // Linear path toward Site 2 (current behavior, equivalent to linear mode)
-                double totalDist = 450.0;  // From y=50 to y=500
+                double totalDist = 450.0;
                 double travelTime = totalDist / ueSpeed;
                 waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
                 waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(0, 500, 1.5)));
@@ -846,7 +873,6 @@ main(int argc, char* argv[])
             }
             else if (builtinPath == "zigzag")
             {
-                // Zigzag path crossing multiple sectors
                 waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
                 waypointMm->AddWaypoint(Waypoint(Seconds(20), Vector(150, 150, 1.5)));
                 waypointMm->AddWaypoint(Waypoint(Seconds(40), Vector(-150, 250, 1.5)));
@@ -856,11 +882,9 @@ main(int argc, char* argv[])
             }
             else if (builtinPath == "highway")
             {
-                // High-speed diagonal crossing (simulates highway vehicle ~30 m/s = 108 km/h)
-                // Crosses entire grid diagonally from corner to corner
-                double highwaySpeed = 30.0;  // m/s
-                double distance = std::sqrt(2) * 800.0;  // Diagonal from (-400,-400) to (400,400)
-                double travelTime = distance / highwaySpeed;  // ~37.7 seconds
+                double highwaySpeed = 30.0;
+                double distance = std::sqrt(2) * 800.0;
+                double travelTime = distance / highwaySpeed;
 
                 waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(-400, -400, 1.5)));
                 waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(400, 400, 1.5)));
@@ -869,47 +893,39 @@ main(int argc, char* argv[])
             }
             else if (builtinPath == "urban-grid")
             {
-                // City blocks with stops at intersections (simulates urban driving with traffic lights)
-                double driveSpeed = 10.0;   // m/s (~36 km/h city speed)
-                double blockSize = 200.0;   // meters per block
-                double blockTime = blockSize / driveSpeed;  // ~20s per block
-                double stopTime = 5.0;      // 5s stop at each intersection
+                double driveSpeed = 10.0;
+                double blockSize = 200.0;
+                double blockTime = blockSize / driveSpeed;
+                double stopTime = 5.0;
 
                 double t = 0.0;
-                // Start at (-200, -200), drive grid pattern
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-200, -200, 1.5)));
 
-                // Block 1: East
                 t += blockTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -200, 1.5)));
-                t += stopTime;  // Stop
+                t += stopTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -200, 1.5)));
 
-                // Block 2: North
                 t += blockTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
-                t += stopTime;  // Stop
+                t += stopTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
 
-                // Block 3: East
                 t += blockTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 0, 1.5)));
-                t += stopTime;  // Stop
+                t += stopTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 0, 1.5)));
 
-                // Block 4: North
                 t += blockTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 200, 1.5)));
-                t += stopTime;  // Stop
+                t += stopTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 200, 1.5)));
 
-                // Block 5: West
                 t += blockTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 200, 1.5)));
-                t += stopTime;  // Stop
+                t += stopTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 200, 1.5)));
 
-                // Block 6: North to Site 2 area
                 t += blockTime;
                 waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 400, 1.5)));
 
@@ -924,8 +940,6 @@ main(int argc, char* argv[])
                 waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
                 waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(0, 500, 1.5)));
             }
-
-            ueNodesTemp.Get(0)->AggregateObject(waypointMm);
         }
     }
     else if (mobilityModel == "random")
@@ -1085,14 +1099,25 @@ main(int argc, char* argv[])
     }
 
     //--------------------------------------------------------------------------
-    // Set up edge servers (one per site)
+    // Set up edge servers
+    // Normal mode: one edge server per site
+    // Extended coverage: only inner 7 sites get edge servers, outer ring shares
     //--------------------------------------------------------------------------
     Ptr<Node> pgw = epcHelper->GetPgwNode();
 
+    // For extended coverage with numRings>=2, only create edge servers for inner sites
+    uint32_t numEdgeServers = numSites;
+    if (extendedCoverage && numRings >= 2)
+    {
+        numEdgeServers = 7;  // Inner ring (center + 6 surrounding sites)
+        NS_LOG_UNCOND("Extended coverage enabled: " << numEdgeServers
+                      << " edge servers for " << numSites << " sites");
+    }
+
     NodeContainer edgeServerNodes;
-    edgeServerNodes.Create(numSites);
+    edgeServerNodes.Create(numEdgeServers);
     NodeContainer ghostNodes;
-    ghostNodes.Create(numSites);
+    ghostNodes.Create(numEdgeServers);
 
     internet.Install(edgeServerNodes);
     // Ghost nodes don't need IP stack - they're pure L2 bridges
@@ -1100,8 +1125,9 @@ main(int argc, char* argv[])
     std::vector<Ptr<NetDevice>> edgeServerOuterDevices;
     std::vector<Ptr<NetDevice>> edgeServerInnerDevices;
     std::vector<Ptr<NetDevice>> ghostDevices;
+    std::vector<Ipv4Address> edgeServerIps;  // Store IPs for outer ring mapping
 
-    for (uint32_t siteId = 0; siteId < numSites; ++siteId)
+    for (uint32_t siteId = 0; siteId < numEdgeServers; ++siteId)
     {
         //----------------------------------------------------------------------
         // P2P: PGW <-> EdgeServer
@@ -1124,6 +1150,7 @@ main(int argc, char* argv[])
 
         Ipv4InterfaceContainer pgwEdgeIpIfaces = ipv4Helper.Assign(pgwEdgeDevices);
         Ipv4Address edgeServerIp = pgwEdgeIpIfaces.GetAddress(1);
+        edgeServerIps.push_back(edgeServerIp);  // Store for outer ring mapping
 
         edgeServerOuterDevices.push_back(pgwEdgeDevices.Get(1));
 
@@ -1187,6 +1214,45 @@ main(int argc, char* argv[])
     }
 
     //--------------------------------------------------------------------------
+    // Extended coverage: Map outer ring cells to inner edge servers
+    // Sector-based mapping: outer sites 7-18 map to inner sites 1-6
+    //   Sites 7-8 → Edge 1, Sites 9-10 → Edge 2, Sites 11-12 → Edge 3
+    //   Sites 13-14 → Edge 4, Sites 15-16 → Edge 5, Sites 17-18 → Edge 6
+    //--------------------------------------------------------------------------
+    if (extendedCoverage && numRings >= 2 && numSites > numEdgeServers)
+    {
+        for (uint32_t outerSiteId = numEdgeServers; outerSiteId < numSites; ++outerSiteId)
+        {
+            // Map outer site to nearest inner site's edge (sector-based)
+            // Sites 7-8 → Edge 1, Sites 9-10 → Edge 2, etc.
+            uint32_t innerSiteId = ((outerSiteId - 7) / 2) + 1;
+            if (innerSiteId >= numEdgeServers)
+            {
+                innerSiteId = numEdgeServers - 1;  // Safety clamp
+            }
+
+            Ipv4Address innerEdgeIp = edgeServerIps[innerSiteId];
+            Ptr<Node> innerEdgeNode = edgeServerNodes.Get(innerSiteId);
+
+            // Map all 3 sectors of this outer site to the inner edge server
+            for (uint32_t sector = 0; sector < 3; ++sector)
+            {
+                uint32_t nodeIdx = outerSiteId * 3 + sector;
+                if (nodeIdx < numCells)
+                {
+                    Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(nodeIdx)->GetObject<NrGnbNetDevice>();
+                    uint16_t actualCellId = gnbNetDevice->GetCellId();
+                    g_cellIdToEdgeServer[actualCellId] = innerEdgeNode;
+                    g_cellIdToEdgeServerIp[actualCellId] = innerEdgeIp;
+                }
+            }
+
+            NS_LOG_UNCOND("Outer Site " << outerSiteId << " -> Edge " << innerSiteId
+                          << " (IP: " << innerEdgeIp << ")");
+        }
+    }
+
+    //--------------------------------------------------------------------------
     // Set up Remote Host (controller / traffic source)
     // Remote Host -> WAN -> Edge Server (remoteHostEdgeId) -> Zenoh -> all edges
     //--------------------------------------------------------------------------
@@ -1197,10 +1263,10 @@ main(int argc, char* argv[])
 
     if (enableRemoteHost && enableTap)
     {
-        // Validate remoteHostEdgeId
-        if (remoteHostEdgeId >= numSites)
+        // Validate remoteHostEdgeId (must be within numEdgeServers, not numSites)
+        if (remoteHostEdgeId >= numEdgeServers)
         {
-            NS_LOG_WARN("remoteHostEdgeId " << remoteHostEdgeId << " >= numSites " << numSites
+            NS_LOG_WARN("remoteHostEdgeId " << remoteHostEdgeId << " >= numEdgeServers " << numEdgeServers
                         << ", using edge 0 instead");
             remoteHostEdgeId = 0;
         }
@@ -1327,7 +1393,7 @@ main(int argc, char* argv[])
         tapBridge.SetAttribute("Mode", StringValue("UseBridge"));
 
         // Install tap bridges on edge server ghost nodes
-        for (uint32_t siteId = 0; siteId < numSites; ++siteId)
+        for (uint32_t siteId = 0; siteId < numEdgeServers; ++siteId)
         {
             std::string tapDeviceName = tapEdgePrefix + std::to_string(siteId);
             tapBridge.SetAttribute("DeviceName", StringValue(tapDeviceName));
@@ -1450,7 +1516,7 @@ main(int argc, char* argv[])
         //                EdgeTunnelApp
         //   - OuterDevice: EdgeServer's P2P device facing PGW
         //   - InnerDevice: EdgeServer's CSMA device facing GhostNode
-        for (uint32_t siteId = 0; siteId < numSites && siteId < edgeServerInnerDevices.size(); ++siteId)
+        for (uint32_t siteId = 0; siteId < numEdgeServers; ++siteId)
         {
             Ptr<EdgeTunnelApp> edgeTunnelApp = CreateObject<EdgeTunnelApp>();
 
@@ -1629,7 +1695,14 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("Network Summary:");
     NS_LOG_UNCOND("  Sites: " << numSites);
     NS_LOG_UNCOND("  Cells: " << numCells);
-    NS_LOG_UNCOND("  Edge Servers: " << numSites << " (one per site)");
+    if (extendedCoverage && numEdgeServers < numSites)
+    {
+        NS_LOG_UNCOND("  Edge Servers: " << numEdgeServers << " (extended coverage: outer ring shares inner edges)");
+    }
+    else
+    {
+        NS_LOG_UNCOND("  Edge Servers: " << numEdgeServers << " (one per site)");
+    }
     NS_LOG_UNCOND("  UEs: " << ueNodes.GetN());
     NS_LOG_UNCOND("==============================================\n");
 

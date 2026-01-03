@@ -636,6 +636,79 @@ HexagonalGridScenarioHelper::CreateScenarioWithMobility(const Vector& speed, dou
                             m_simTag);
 }
 
+void
+HexagonalGridScenarioHelper::CreateScenarioWithCustomMobility(MobilityHelper& ueMobilityHelper)
+{
+    m_hexagonalRadius = m_isd / 3;
+
+    m_bs.Create(m_numBs);
+    m_ut.Create(m_numUt);
+
+    NS_ASSERT(m_isd > 0);
+    NS_ASSERT(m_numRings < 6);
+    NS_ASSERT(m_hexagonalRadius > 0);
+    NS_ASSERT(m_bsHeight >= 0.0);
+    NS_ASSERT(m_utHeight >= 0.0);
+    NS_ASSERT(m_bs.GetN() > 0);
+    NS_ASSERT(m_ut.GetN() > 0);
+
+    MobilityHelper mobility;
+    Ptr<ListPositionAllocator> bsPosVector = CreateObject<ListPositionAllocator>();
+    Ptr<ListPositionAllocator> bsCenterVector = CreateObject<ListPositionAllocator>();
+    Ptr<ListPositionAllocator> sitePosVector = CreateObject<ListPositionAllocator>();
+
+    // BS position (same as CreateScenario)
+    for (std::size_t cellId = 0; cellId < m_numBs; cellId++)
+    {
+        uint16_t siteIndex = GetSiteIndex(cellId);
+        Vector sitePos(m_centralPos);
+        const double dist = siteDistances.at(siteIndex);
+        const double angleRad = siteAngles.at(siteIndex) * M_PI / 180;
+        sitePos.x += m_isd * dist * cos(angleRad);
+        sitePos.y += m_isd * dist * sin(angleRad);
+        sitePos.z = m_bsHeight;
+
+        if (GetSectorIndex(cellId) == 0)
+        {
+            sitePosVector->Add(sitePos);
+        }
+
+        Vector bsPos = GetAntennaPosition(sitePos, cellId);
+        bsPosVector->Add(bsPos);
+
+        Vector cellCenterPos = GetHexagonalCellCenter(bsPos, cellId);
+        bsCenterVector->Add(cellCenterPos);
+    }
+
+    // Install BS mobility (ConstantPositionMobilityModel)
+    mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    mobility.SetPositionAllocator(bsPosVector);
+    mobility.Install(m_bs);
+
+    // Install UE mobility using the provided helper
+    // The caller is responsible for configuring the MobilityHelper with
+    // the desired mobility model and position allocator
+    ueMobilityHelper.Install(m_ut);
+
+    // Create a position allocator for plotting (get positions from installed mobility)
+    Ptr<ListPositionAllocator> utPosVector = CreateObject<ListPositionAllocator>();
+    for (uint32_t i = 0; i < m_ut.GetN(); i++)
+    {
+        Ptr<MobilityModel> mob = m_ut.Get(i)->GetObject<MobilityModel>();
+        if (mob)
+        {
+            utPosVector->Add(mob->GetPosition());
+        }
+    }
+
+    PlotHexagonalDeployment(sitePosVector,
+                            bsCenterVector,
+                            utPosVector,
+                            m_hexagonalRadius,
+                            m_resultsDir,
+                            m_simTag);
+}
+
 int64_t
 HexagonalGridScenarioHelper::AssignStreams(int64_t stream)
 {
