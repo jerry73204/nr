@@ -51,6 +51,7 @@
 #include "ns3/internet-apps-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/mobility-module.h"
+#include "ns3/ns2-mobility-helper.h"
 #include "ns3/nr-module.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/tap-bridge-module.h"
@@ -60,9 +61,11 @@
 #include "handover-prediction-file.h"
 #include "zenoh-latency-measurement.h"
 
+#include <cmath>
+#include <deque>
+#include <fstream>
 #include <iomanip>
 #include <map>
-#include <deque>
 
 using namespace ns3;
 
@@ -112,6 +115,10 @@ std::map<uint64_t, Ptr<UeTunnelApp>> g_ueTunnelApps;
 
 // Pointer to the scenario helper (for index mapping)
 NodeDistributionScenarioInterface* g_scenario = nullptr;
+
+// Trajectory logging
+std::ofstream g_trajectoryFile;
+bool g_trajectoryLoggingEnabled = false;
 
 //==============================================================================
 // Handover Prediction Algorithm (Same as nr-mec-handover.cc)
@@ -406,7 +413,22 @@ PrintUePosition(NodeContainer ueNodes)
     for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
     {
         Ptr<Node> ue = ueNodes.Get(i);
-        Ptr<MobilityModel> mobility = ue->GetObject<MobilityModel>();
+
+        // Try to get the most specific mobility model
+        Ptr<MobilityModel> mobility = ue->GetObject<GaussMarkovMobilityModel>();
+        if (!mobility)
+        {
+            mobility = ue->GetObject<WaypointMobilityModel>();
+        }
+        if (!mobility)
+        {
+            mobility = ue->GetObject<MobilityModel>();
+        }
+        if (!mobility)
+        {
+            continue;
+        }
+
         Vector pos = mobility->GetPosition();
         Vector vel = mobility->GetVelocity();
 
@@ -478,6 +500,91 @@ RemoteHostPacketMonitor(Ptr<NetDevice> device,
 }
 
 //==============================================================================
+// Helper Functions
+//==============================================================================
+
+/**
+ * @brief Build NS-3 random variable string for Normal velocity distribution
+ * @param mean Mean velocity in m/s
+ * @param variance Variance of velocity (m/s)^2
+ * @return String for NS-3 NormalRandomVariable attribute
+ */
+std::string
+BuildNormalVelocityString(double mean, double variance)
+{
+    std::ostringstream oss;
+    oss << "ns3::NormalRandomVariable[Mean=" << mean
+        << "|Variance=" << variance
+        << "|Bound=" << (3.0 * std::sqrt(variance)) << "]";
+    return oss.str();
+}
+
+/**
+ * @brief Write UE trajectory to CSV file
+ * @param ueNodes Container of UE nodes to log
+ * @param interval Logging interval in seconds
+ */
+void
+LogUeTrajectory(NodeContainer ueNodes, double interval)
+{
+    if (!g_trajectoryLoggingEnabled)
+    {
+        return;
+    }
+
+    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+    {
+        Ptr<Node> ue = ueNodes.Get(i);
+
+        // Try to get the most specific mobility model
+        // (GaussMarkov if aggregated, otherwise generic MobilityModel)
+        Ptr<MobilityModel> mobility = ue->GetObject<GaussMarkovMobilityModel>();
+        if (!mobility)
+        {
+            mobility = ue->GetObject<WaypointMobilityModel>();
+        }
+        if (!mobility)
+        {
+            mobility = ue->GetObject<MobilityModel>();
+        }
+        if (!mobility)
+        {
+            continue;
+        }
+
+        Vector pos = mobility->GetPosition();
+        Vector vel = mobility->GetVelocity();
+        double speed = vel.GetLength();
+
+        // Get IMSI from the first NR device
+        uint64_t imsi = 0;
+        for (uint32_t d = 0; d < ue->GetNDevices(); ++d)
+        {
+            Ptr<NrUeNetDevice> nrDev = DynamicCast<NrUeNetDevice>(ue->GetDevice(d));
+            if (nrDev)
+            {
+                imsi = nrDev->GetImsi();
+                break;
+            }
+        }
+
+        uint16_t servingCell = g_ueCurrentServingCell.count(imsi) ? g_ueCurrentServingCell[imsi] : 0;
+        uint16_t siteId = g_cellIdToSiteId.count(servingCell) ? g_cellIdToSiteId[servingCell] : 0;
+
+        g_trajectoryFile << std::fixed << std::setprecision(3)
+                         << Simulator::Now().GetSeconds() << ","
+                         << imsi << ","
+                         << pos.x << "," << pos.y << "," << pos.z << ","
+                         << vel.x << "," << vel.y << "," << vel.z << ","
+                         << speed << ","
+                         << servingCell << "," << siteId << "\n";
+    }
+
+    // Schedule next logging
+    Simulator::Schedule(Seconds(interval), &LogUeTrajectory, ueNodes, interval);
+}
+
+//==============================================================================
 // Main Function
 //==============================================================================
 
@@ -492,8 +599,13 @@ main(int argc, char* argv[])
     double maxUeDistance = 1000.0;               // Max UE distance to closest site
 
     // Mobility parameters
-    std::string mobilityModel = "linear";        // linear or random
-    double ueSpeed = 10.0;                       // UE speed in m/s
+    std::string mobilityModel = "linear";        // linear, random, gauss-markov, waypoint
+    double ueSpeed = 10.0;                       // UE speed in m/s (mean for random)
+    double ueSpeedVariance = 2.0;                // Variance for Gaussian velocity (m/s)^2
+    double gaussAlpha = 0.85;                    // Gauss-Markov memory factor (0=random, 1=linear)
+    double gaussTimeStep = 0.5;                  // Gauss-Markov update interval (seconds)
+    std::string waypointFile = "";               // NS-2 format trace file (empty = use built-in path)
+    std::string builtinPath = "linear-y";        // Built-in paths: hexagonal, linear-y, zigzag
     double simTime = 300.0;                      // Simulation time in seconds
 
     // NR parameters
@@ -515,6 +627,10 @@ main(int argc, char* argv[])
     std::string latencyOutputPath = "/tmp/zenoh_latency.csv";
     double slaThresholdMs = 50.0;
     uint16_t sourceEdgeNodeId = 5;  // Edge node that publishes critical data
+
+    // Trajectory logging
+    std::string trajectoryOutputPath = "";       // Empty = disabled, path = enable CSV output
+    double trajectoryLogInterval = 0.5;          // Logging interval in seconds
 
     // Remote Host (traffic source / controller)
     bool enableRemoteHost = true;
@@ -539,8 +655,13 @@ main(int argc, char* argv[])
     cmd.AddValue("maxUeDistance", "Max UE distance to closest site", maxUeDistance);
 
     // Mobility
-    cmd.AddValue("mobilityModel", "UE mobility model (linear, random)", mobilityModel);
-    cmd.AddValue("ueSpeed", "UE speed in m/s", ueSpeed);
+    cmd.AddValue("mobilityModel", "UE mobility model (linear, random, gauss-markov, waypoint)", mobilityModel);
+    cmd.AddValue("ueSpeed", "UE speed in m/s (mean for random distributions)", ueSpeed);
+    cmd.AddValue("ueSpeedVariance", "Velocity variance for Gaussian distribution", ueSpeedVariance);
+    cmd.AddValue("gaussAlpha", "Gauss-Markov memory factor (0-1)", gaussAlpha);
+    cmd.AddValue("gaussTimeStep", "Gauss-Markov update interval in seconds", gaussTimeStep);
+    cmd.AddValue("waypointFile", "NS-2 format mobility trace file path", waypointFile);
+    cmd.AddValue("builtinPath", "Built-in path: hexagonal, linear-y, zigzag, highway, urban-grid", builtinPath);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
 
     // NR
@@ -562,6 +683,10 @@ main(int argc, char* argv[])
     cmd.AddValue("latencyOutputPath", "Output path for latency CSV file", latencyOutputPath);
     cmd.AddValue("slaThresholdMs", "SLA threshold in milliseconds", slaThresholdMs);
     cmd.AddValue("sourceEdgeNodeId", "Edge node ID that publishes critical data", sourceEdgeNodeId);
+
+    // Trajectory logging
+    cmd.AddValue("trajectoryOutputPath", "Path for trajectory CSV file (empty=disabled)", trajectoryOutputPath);
+    cmd.AddValue("trajectoryLogInterval", "Trajectory logging interval in seconds", trajectoryLogInterval);
 
     // Remote Host
     cmd.AddValue("enableRemoteHost", "Enable remote host (controller) node", enableRemoteHost);
@@ -630,21 +755,188 @@ main(int argc, char* argv[])
     gridScenario.SetUtNumber(numUes);
     gridScenario.SetMaxUeDistanceToClosestSite(maxUeDistance);
 
+    // Calculate grid bounds for mobility models
+    double gridRadius = isd * (numRings + 1);
+
     if (mobilityModel == "linear")
     {
         gridScenario.CreateScenarioWithMobility(Vector(ueSpeed, 0, 0), 0.0);
     }
-    else
+    else if (mobilityModel == "gauss-markov")
+    {
+        // Create static scenario first, then replace mobility on first UE
+        gridScenario.CreateScenario();
+
+        NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
+
+        // Create Gauss-Markov mobility model directly and set position
+        Ptr<GaussMarkovMobilityModel> gaussMobility = CreateObject<GaussMarkovMobilityModel>();
+        gaussMobility->SetAttribute("Bounds", BoxValue(Box(-gridRadius, gridRadius, -gridRadius, gridRadius, 0, 10)));
+        gaussMobility->SetAttribute("TimeStep", TimeValue(Seconds(gaussTimeStep)));
+        gaussMobility->SetAttribute("Alpha", DoubleValue(gaussAlpha));
+        gaussMobility->SetAttribute("MeanVelocity", StringValue(BuildNormalVelocityString(ueSpeed, ueSpeedVariance)));
+        gaussMobility->SetAttribute("MeanDirection", StringValue("ns3::UniformRandomVariable[Min=0|Max=6.283185307]"));
+        gaussMobility->SetAttribute("MeanPitch", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+        gaussMobility->SetAttribute("NormalVelocity", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=1.0|Bound=10.0]"));
+        gaussMobility->SetAttribute("NormalDirection", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.2|Bound=0.4]"));
+        gaussMobility->SetAttribute("NormalPitch", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.0|Bound=0.0]"));
+
+        // Set initial position
+        gaussMobility->SetPosition(Vector(0.0, 50.0, 1.5));
+
+        // Replace mobility model on first UE
+        Ptr<Node> firstUe = ueNodesTemp.Get(0);
+        Ptr<MobilityModel> oldMobility = firstUe->GetObject<MobilityModel>();
+        if (oldMobility)
+        {
+            firstUe->AggregateObject(gaussMobility);
+            // Note: We can't remove old mobility, but the new one will be used
+            // when explicitly fetched by type
+        }
+        else
+        {
+            firstUe->AggregateObject(gaussMobility);
+        }
+
+        NS_LOG_INFO("Gauss-Markov mobility: alpha=" << gaussAlpha
+                    << " meanSpeed=" << ueSpeed << " m/s"
+                    << " variance=" << ueSpeedVariance);
+    }
+    else if (mobilityModel == "waypoint")
+    {
+        // Create static scenario first
+        gridScenario.CreateScenario();
+
+        NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
+
+        if (!waypointFile.empty())
+        {
+            // Load from NS-2 format file
+            Ns2MobilityHelper ns2(waypointFile);
+            ns2.Install();
+            NS_LOG_INFO("Waypoint mobility loaded from file: " << waypointFile);
+        }
+        else
+        {
+            // Use built-in predefined path
+            Ptr<WaypointMobilityModel> waypointMm = CreateObject<WaypointMobilityModel>();
+
+            if (builtinPath == "hexagonal")
+            {
+                // Circular path visiting all sites (triggers multiple handovers)
+                // Site positions: 0(0,0), 1(433,250), 2(0,500), 3(-433,250), etc.
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(30), Vector(200, 200, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(60), Vector(0, 400, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(90), Vector(-200, 200, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(120), Vector(-200, -200, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(150), Vector(0, -400, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(180), Vector(200, -200, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(210), Vector(0, 50, 1.5)));
+                NS_LOG_INFO("Waypoint mobility: hexagonal path visiting all sites");
+            }
+            else if (builtinPath == "linear-y")
+            {
+                // Linear path toward Site 2 (current behavior, equivalent to linear mode)
+                double totalDist = 450.0;  // From y=50 to y=500
+                double travelTime = totalDist / ueSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(0, 500, 1.5)));
+                NS_LOG_INFO("Waypoint mobility: linear-y path toward Site 2");
+            }
+            else if (builtinPath == "zigzag")
+            {
+                // Zigzag path crossing multiple sectors
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(20), Vector(150, 150, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(40), Vector(-150, 250, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(60), Vector(150, 350, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(80), Vector(-150, 450, 1.5)));
+                NS_LOG_INFO("Waypoint mobility: zigzag path crossing sectors");
+            }
+            else if (builtinPath == "highway")
+            {
+                // High-speed diagonal crossing (simulates highway vehicle ~30 m/s = 108 km/h)
+                // Crosses entire grid diagonally from corner to corner
+                double highwaySpeed = 30.0;  // m/s
+                double distance = std::sqrt(2) * 800.0;  // Diagonal from (-400,-400) to (400,400)
+                double travelTime = distance / highwaySpeed;  // ~37.7 seconds
+
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(-400, -400, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(400, 400, 1.5)));
+                NS_LOG_INFO("Waypoint mobility: highway path (speed=" << highwaySpeed
+                            << " m/s, travel time=" << travelTime << "s)");
+            }
+            else if (builtinPath == "urban-grid")
+            {
+                // City blocks with stops at intersections (simulates urban driving with traffic lights)
+                double driveSpeed = 10.0;   // m/s (~36 km/h city speed)
+                double blockSize = 200.0;   // meters per block
+                double blockTime = blockSize / driveSpeed;  // ~20s per block
+                double stopTime = 5.0;      // 5s stop at each intersection
+
+                double t = 0.0;
+                // Start at (-200, -200), drive grid pattern
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-200, -200, 1.5)));
+
+                // Block 1: East
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -200, 1.5)));
+                t += stopTime;  // Stop
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -200, 1.5)));
+
+                // Block 2: North
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+                t += stopTime;  // Stop
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+
+                // Block 3: East
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 0, 1.5)));
+                t += stopTime;  // Stop
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 0, 1.5)));
+
+                // Block 4: North
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 200, 1.5)));
+                t += stopTime;  // Stop
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 200, 1.5)));
+
+                // Block 5: West
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 200, 1.5)));
+                t += stopTime;  // Stop
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 200, 1.5)));
+
+                // Block 6: North to Site 2 area
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 400, 1.5)));
+
+                NS_LOG_INFO("Waypoint mobility: urban-grid path with " << stopTime
+                            << "s stops at intersections (total time=" << t << "s)");
+            }
+            else
+            {
+                NS_LOG_WARN("Unknown builtinPath: " << builtinPath << ", using linear-y");
+                double totalDist = 450.0;
+                double travelTime = totalDist / ueSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(0, 500, 1.5)));
+            }
+
+            ueNodesTemp.Get(0)->AggregateObject(waypointMm);
+        }
+    }
+    else if (mobilityModel == "random")
     {
         // For random waypoint, first create static scenario
         gridScenario.CreateScenario();
 
         // Then install random waypoint mobility on UEs
-        NodeContainer ueNodes = gridScenario.GetUserTerminals();
+        NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
         MobilityHelper mobilityHelper;
 
-        // Calculate bounds based on grid size
-        double gridRadius = isd * (numRings + 1);
         Ptr<RandomBoxPositionAllocator> posAlloc = CreateObject<RandomBoxPositionAllocator>();
         posAlloc->SetAttribute("X", StringValue("ns3::UniformRandomVariable[Min=-" +
             std::to_string(gridRadius) + "|Max=" + std::to_string(gridRadius) + "]"));
@@ -654,11 +946,16 @@ main(int argc, char* argv[])
 
         mobilityHelper.SetPositionAllocator(posAlloc);
         mobilityHelper.SetMobilityModel("ns3::RandomWaypointMobilityModel",
-            "Speed", StringValue("ns3::ConstantRandomVariable[Constant=" + std::to_string(ueSpeed) + "]"),
+            "Speed", StringValue(BuildNormalVelocityString(ueSpeed, ueSpeedVariance)),
             "Pause", StringValue("ns3::ConstantRandomVariable[Constant=0]"),
             "PositionAllocator", PointerValue(posAlloc));
 
-        mobilityHelper.Install(ueNodes);
+        mobilityHelper.Install(ueNodesTemp);
+        NS_LOG_INFO("Random waypoint mobility with Normal velocity distribution");
+    }
+    else
+    {
+        NS_FATAL_ERROR("Unknown mobilityModel: " << mobilityModel);
     }
 
     NodeContainer gnbNodes = gridScenario.GetBaseStations();
@@ -671,13 +968,8 @@ main(int argc, char* argv[])
     NS_LOG_INFO("Created " << numSites << " sites with " << numCells << " cells");
     NS_LOG_INFO("Created " << ueNodes.GetN() << " UEs");
 
-    // Place first UE (with tap bridge) near the center so it attaches to middle base station (Site 0)
-    // Site 0 is at the center of the hexagonal grid at position (0, 0)
-    //
-    // Hexagonal grid sector antenna orientations (TRIPLE sectorization):
-    //   Sector 0: 30°  (pointing +X, slightly +Y)
-    //   Sector 1: 150° (pointing -X, slightly +Y)
-    //   Sector 2: 270° (pointing -Y)
+    // Special positioning for "linear" mode only
+    // Other mobility models (gauss-markov, waypoint, random) handle their own positioning
     //
     // Site positions (1 ring, ISD=500m):
     //   Site 0: (0, 0)         - center
@@ -687,13 +979,6 @@ main(int argc, char* argv[])
     //   Site 4: (-433, -250)   - lower left
     //   Site 5: (0, -500)      - bottom
     //   Site 6: (433, -250)    - lower right
-    //
-    // To trigger inter-site handover, the UE must move into a neighboring site's sector coverage.
-    // Site 6 is at (433, -250) and its Sector 0 points at 30°, covering the +X+Y direction.
-    // Moving the UE from (50, 0) along +X direction will eventually enter Site 6's Sector 0 coverage.
-    //
-    // Alternative: Move toward Site 2 (at top, 0, 500) by going +Y direction.
-    // Site 2's Sector 2 points at 270° (downward), covering the area below Site 2.
     if (ueNodes.GetN() > 0 && mobilityModel == "linear")
     {
         Ptr<ConstantVelocityMobilityModel> firstUeMobility =
@@ -1314,6 +1599,30 @@ main(int argc, char* argv[])
     Simulator::Schedule(Seconds(10.0), &PrintUePosition, ueNodes);
 
     //--------------------------------------------------------------------------
+    // Initialize trajectory logging (if enabled)
+    //--------------------------------------------------------------------------
+    if (!trajectoryOutputPath.empty())
+    {
+        g_trajectoryFile.open(trajectoryOutputPath);
+        if (g_trajectoryFile.is_open())
+        {
+            g_trajectoryLoggingEnabled = true;
+            // Write CSV header
+            g_trajectoryFile << "time_s,imsi,x,y,z,vx,vy,vz,speed,cell_id,site_id\n";
+
+            // Schedule first logging
+            Simulator::Schedule(Seconds(trajectoryLogInterval), &LogUeTrajectory, ueNodes, trajectoryLogInterval);
+
+            NS_LOG_UNCOND("Trajectory logging enabled: " << trajectoryOutputPath
+                          << " (interval=" << trajectoryLogInterval << "s)");
+        }
+        else
+        {
+            NS_LOG_WARN("Failed to open trajectory file: " << trajectoryOutputPath);
+        }
+    }
+
+    //--------------------------------------------------------------------------
     // Print summary
     //--------------------------------------------------------------------------
     NS_LOG_UNCOND("\n==============================================");
@@ -1341,6 +1650,13 @@ main(int argc, char* argv[])
     // Print Zenoh latency measurement summary
     ZenohLatencyTracker::GetInstance().PrintSummary();
     ZenohLatencyTracker::GetInstance().Close();
+
+    // Close trajectory file
+    if (g_trajectoryLoggingEnabled && g_trajectoryFile.is_open())
+    {
+        g_trajectoryFile.close();
+        NS_LOG_UNCOND("Trajectory saved to: " << trajectoryOutputPath);
+    }
 
     Simulator::Destroy();
     return 0;
