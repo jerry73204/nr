@@ -315,21 +315,25 @@ HandoverStartCallback(std::string path,
 
     uint16_t sourceSite = g_cellIdToSiteId.count(sourceCellId) ? g_cellIdToSiteId[sourceCellId] : 0;
     uint16_t targetSite = g_cellIdToSiteId.count(targetCellId) ? g_cellIdToSiteId[targetCellId] : 0;
+    bool isIntraSite = (sourceSite == targetSite);
 
+    NS_LOG_UNCOND("\n======== HANDOVER EVENT ========");
     NS_LOG_UNCOND(now.GetSeconds()
                   << "s [HANDOVER START] IMSI=" << imsi
                   << " Cell " << sourceCellId << " (Site " << sourceSite << ")"
                   << " -> Cell " << targetCellId << " (Site " << targetSite << ")"
+                  << (isIntraSite ? " [INTRA-SITE]" : " [INTER-SITE]")
                   << " (interrupt: " << g_handoverInterruptMs << "ms)");
 
     // Mark handover as active and set handover window for latency measurement
     if (g_ueTunnelApps.count(imsi) > 0 && g_ueTunnelApps[imsi])
     {
+        NS_LOG_UNCOND("  Tunnel endpoint BEFORE: " << g_ueTunnelApps[imsi]->GetTunnelEndpoint());
         g_ueTunnelApps[imsi]->SetHandoverActive(true);
         g_ueTunnelApps[imsi]->SetHandoverWindow(now, g_handoverEndTime[imsi], g_networkDelayMs);
     }
 
-    if (sourceSite != targetSite)
+    if (!isIntraSite)
     {
         Ipv4Address sourceEdgeIp = g_cellIdToEdgeServerIp.count(sourceCellId) ?
             g_cellIdToEdgeServerIp[sourceCellId] : Ipv4Address("0.0.0.0");
@@ -344,7 +348,9 @@ HandoverStartCallback(std::string path,
     }
     else
     {
-        NS_LOG_UNCOND("  Intra-site handover: no edge server switch");
+        Ipv4Address edgeIp = g_cellIdToEdgeServerIp.count(sourceCellId) ?
+            g_cellIdToEdgeServerIp[sourceCellId] : Ipv4Address("0.0.0.0");
+        NS_LOG_UNCOND("  Intra-site handover: edge server unchanged (Edge IP: " << edgeIp << ")");
     }
 }
 
@@ -357,18 +363,22 @@ HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t
     uint16_t previousCell = g_ueCurrentServingCell.count(imsi) ? g_ueCurrentServingCell[imsi] : 0;
     uint16_t previousSite = g_cellIdToSiteId.count(previousCell) ? g_cellIdToSiteId[previousCell] : 0;
     uint16_t newSite = g_cellIdToSiteId.count(cellId) ? g_cellIdToSiteId[cellId] : 0;
+    bool isIntraSite = (previousSite == newSite);
 
     g_ueCurrentServingCell[imsi] = cellId;
 
     NS_LOG_UNCOND(Simulator::Now().GetSeconds()
                   << "s [HANDOVER SUCCESS] IMSI=" << imsi
-                  << " New ServingCell=" << cellId << " (Site " << newSite << ")");
+                  << " New ServingCell=" << cellId << " (Site " << newSite << ")"
+                  << (isIntraSite ? " [INTRA-SITE]" : " [INTER-SITE]"));
 
     // Clear handover active flag for latency measurement
     if (g_ueTunnelApps.count(imsi) > 0 && g_ueTunnelApps[imsi])
     {
         g_ueTunnelApps[imsi]->SetHandoverActive(false);
+        NS_LOG_UNCOND("  Tunnel endpoint AFTER: " << g_ueTunnelApps[imsi]->GetTunnelEndpoint());
     }
+    NS_LOG_UNCOND("================================\n");
 
     // Only switch tunnel endpoint if this is an inter-site handover
     if (previousSite != newSite && g_cellIdToEdgeServerIp.count(cellId) > 0)

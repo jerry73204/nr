@@ -434,6 +434,9 @@ NrUeManager::SetupDataRadioBearer(NrEpsBearer bearer,
 
     if (m_state == HANDOVER_JOINING)
     {
+        NS_LOG_DEBUG("SetupDRB HANDOVER_JOINING: RNTI=" << m_rnti << " DRBID=" << +drbid
+                     << " LCID=" << +lcid << " BID=" << +bid << " TEID=" << gtpTeid);
+
         // setup TEIDs for receiving data eventually forwarded over X2-U
         NrGnbRrc::X2uTeidInfo x2uTeidInfo;
         x2uTeidInfo.rnti = m_rnti;
@@ -441,6 +444,15 @@ NrUeManager::SetupDataRadioBearer(NrEpsBearer bearer,
         auto ret = m_rrc->m_x2uTeidInfoMap.insert(
             std::pair<uint32_t, NrGnbRrc::X2uTeidInfo>(gtpTeid, x2uTeidInfo));
         NS_ASSERT_MSG(ret.second == true, "overwriting a pre-existing entry in m_x2uTeidInfoMap");
+
+        // Setup S1 Bearer mapping immediately to prevent packet drops during handover.
+        // This ensures the RNTI->TEID mapping exists before UE starts sending data,
+        // avoiding the race condition where packets arrive before PathSwitchRequest completes.
+        if (m_rrc->m_s1SapProvider != nullptr)
+        {
+            uint16_t cellId = m_rrc->ComponentCarrierToCellId(m_componentCarrierId);
+            m_rrc->m_s1SapProvider->SetupS1Bearer(gtpTeid, m_rnti, bid, cellId);
+        }
     }
 
     TypeId rlcTypeId = m_rrc->GetRlcType(bearer);
@@ -686,7 +698,9 @@ NrUeManager::PrepareHandover(uint16_t cellId)
         if (m_rrc->HasCellId(cellId))
         {
             // Intra-gNB handover
-            NS_LOG_DEBUG("Intra-gNB handover for cellId " << cellId);
+            NS_LOG_DEBUG("Intra-gNB handover: targetCellId=" << cellId
+                         << " targetCC=" << +m_rrc->CellToComponentCarrierId(cellId)
+                         << " sourceCC=" << +m_componentCarrierId);
             uint8_t componentCarrierId = m_rrc->CellToComponentCarrierId(cellId);
             uint16_t rnti = m_rrc->AddUe(NrUeManager::HANDOVER_JOINING, componentCarrierId);
             NrGnbCmacSapProvider::AllocateNcRaPreambleReturnValue anrcrv =
@@ -3168,12 +3182,11 @@ NrGnbRrc::RemoveUe(uint16_t rnti)
     NS_ASSERT_MSG(it != m_ueMap.end(), "request to remove UE info with unknown rnti " << rnti);
     uint64_t imsi = it->second->GetImsi();
     uint16_t srsCi = (*it).second->GetSrsConfigurationIndex();
+    uint16_t cellId = ComponentCarrierToCellId(it->second->GetComponentCarrierId());
     // cancel pending events
     it->second->CancelPendingEvents();
     // fire trace upon connection release
-    m_connectionReleaseTrace(imsi,
-                             ComponentCarrierToCellId(it->second->GetComponentCarrierId()),
-                             rnti);
+    m_connectionReleaseTrace(imsi, cellId, rnti);
     m_ueMap.erase(it);
     for (uint16_t i = 0; i < m_numberOfComponentCarriers; i++)
     {
@@ -3182,7 +3195,7 @@ NrGnbRrc::RemoveUe(uint16_t rnti)
     }
     if (m_s1SapProvider != nullptr)
     {
-        m_s1SapProvider->UeContextRelease(rnti);
+        m_s1SapProvider->UeContextRelease(rnti, cellId);
     }
     m_ccmRrcSapProvider->RemoveUe(rnti);
     // need to do this after NrUeManager has been deleted

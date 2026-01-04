@@ -296,10 +296,15 @@ EdgeTunnelApp::ReceiveFromOuter(Ptr<NetDevice> device,
         if (udpHeader.GetDestinationPort() == m_localPort)
         {
             // This is an incoming tunnel packet from UE!
-            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Received from tunnel: "
-                          << pktCopy->GetSize() << " bytes from " << srcAddr);
-
             m_rxPackets++;
+
+            // Log every 10th packet
+            if (m_rxPackets % 10 == 1)
+            {
+                NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL " << m_edgeNodeId
+                              << "] RX_FROM_UE #" << m_rxPackets
+                              << " size=" << pktCopy->GetSize() << " from " << srcAddr);
+            }
 
             // Schedule ForwardToInner to run after this callback completes
             // This avoids issues with CSMA channel state during promiscuous callback
@@ -431,9 +436,16 @@ EdgeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
         return false;
     }
 
-    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Downstream: "
-                  << srcAddr << " -> " << dstAddr << " via UE " << ueAddr
-                  << " (size=" << packet->GetSize() << ")");
+    // Log downstream packet capture (every 10th packet)
+    static uint64_t downstreamCount = 0;
+    downstreamCount++;
+    if (downstreamCount % 10 == 1)
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL " << m_edgeNodeId
+                      << "] DOWNSTREAM #" << downstreamCount
+                      << " " << srcAddr << " -> " << dstAddr << " via UE " << ueAddr
+                      << " size=" << packet->GetSize());
+    }
 
     // Tunnel this packet to the UE
     SendToTunnel(packet, ueAddr);
@@ -448,7 +460,8 @@ EdgeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket, Ipv4Address ueAddr)
 
     if (!m_tunnelSocket)
     {
-        NS_LOG_ERROR("No tunnel socket");
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL " << m_edgeNodeId
+                      << "] ERROR: No tunnel socket!");
         return;
     }
 
@@ -462,12 +475,18 @@ EdgeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket, Ipv4Address ueAddr)
     if (ret > 0)
     {
         m_txPackets++;
-        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Sent to tunnel: "
-                      << tunnelPacket->GetSize() << " bytes -> " << ueAddr);
+        // Log every 10th packet
+        if (m_txPackets % 10 == 1)
+        {
+            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL " << m_edgeNodeId
+                          << "] TX_TO_UE #" << m_txPackets
+                          << " size=" << tunnelPacket->GetSize() << " -> " << ueAddr);
+        }
     }
     else
     {
-        NS_LOG_DEBUG("[EDGE_TUNNEL] ERROR: Failed to send to tunnel, ret=" << ret);
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL " << m_edgeNodeId
+                      << "] ERROR: SendTo UE failed! ret=" << ret << " ueAddr=" << ueAddr);
     }
 }
 
@@ -529,9 +548,9 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
 
         if ((dstVal & maskVal) != (subnetVal & maskVal))
         {
-            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] DROP: "
-                          << dstAddr << " not on inner subnet " << m_innerSubnet << "/"
-                          << m_innerMask << " - connection should break after handover");
+            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL " << m_edgeNodeId
+                          << "] DROP_INNER_SUBNET: " << srcAddr << " -> " << dstAddr
+                          << " (expected subnet " << m_innerSubnet << "/" << m_innerMask << ")");
             return;
         }
     }
@@ -575,21 +594,24 @@ EdgeTunnelApp::ForwardToInner(Ptr<Packet> packet)
         }
     }
 
-    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Forward to inner: "
-                  << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")"
-                  << " IP hdr=" << headerSize << " bytes, proto=" << (int)ipHeader.GetProtocol()
-                  << " dstMac=" << dstMac << " via device " << m_innerDevice->GetAddress());
+    // Log forward to inner (every 10th packet)
+    static uint64_t forwardCount = 0;
+    forwardCount++;
+    if (forwardCount % 10 == 1)
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL " << m_edgeNodeId
+                      << "] FWD_TO_DOCKER #" << forwardCount
+                      << " " << srcAddr << " -> " << dstAddr << " size=" << packet->GetSize()
+                      << " dstMac=" << dstMac);
+    }
 
     // Send to inner device (CSMA -> GhostNode -> tap bridge -> Docker)
     bool success = m_innerDevice->Send(packet, dstMac, 0x0800);  // IP protocol
 
-    if (success)
+    if (!success)
     {
-        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] Send success on inner device");
-    }
-    else
-    {
-        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL] ERROR: Send failed on inner device!");
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [EDGE_TUNNEL " << m_edgeNodeId
+                      << "] ERROR: FWD_TO_DOCKER failed! " << srcAddr << " -> " << dstAddr);
     }
 }
 

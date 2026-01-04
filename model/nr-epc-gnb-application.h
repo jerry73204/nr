@@ -136,18 +136,20 @@ class NrEpcGnbApplication : public Application
      */
     struct EpsFlowId_t
     {
-        uint16_t m_rnti; ///< RNTI
-        uint8_t m_bid;   ///< Bid, the EPS Bearer Identifier
+        uint16_t m_cellId; ///< Cell ID
+        uint16_t m_rnti;   ///< RNTI
+        uint8_t m_bid;     ///< Bid, the EPS Bearer Identifier
 
       public:
         EpsFlowId_t();
         /**
          * Constructor
          *
-         * @param a RNTI
-         * @param b bid
+         * @param cellId Cell ID
+         * @param rnti RNTI
+         * @param bid Bearer ID
          */
-        EpsFlowId_t(const uint16_t a, const uint8_t b);
+        EpsFlowId_t(const uint16_t cellId, const uint16_t rnti, const uint8_t bid);
 
         /**
          * Comparison operator
@@ -183,8 +185,9 @@ class NrEpcGnbApplication : public Application
     /**
      * UE Context Release function
      * @param rnti the RNTI
+     * @param cellId the Cell ID
      */
-    void DoUeContextRelease(uint16_t rnti);
+    void DoUeContextRelease(uint16_t rnti, uint16_t cellId);
 
     // S1-AP SAP gNB methods
     /**
@@ -218,6 +221,20 @@ class NrEpcGnbApplication : public Application
      * @param bearerId Bearer Identity which is to be de-activated
      */
     void DoReleaseIndication(uint64_t imsi, uint16_t rnti, uint8_t bearerId);
+
+    /**
+     * Setup S1 Bearer mapping for handover
+     *
+     * This method sets up the RNTI to TEID mapping in the EPC gNB application
+     * immediately during handover, before PathSwitchRequest is called.
+     * This prevents packet drops during the handover transition period.
+     *
+     * @param teid the Tunnel Endpoint Identifier
+     * @param rnti the RNTI of the UE
+     * @param bid the Bearer ID
+     * @param cellId the Cell ID
+     */
+    void DoSetupS1Bearer(uint32_t teid, uint16_t rnti, uint8_t bid, uint16_t cellId);
 
     /**
      * Send a packet to the UE via the NR radio interface of the gNB
@@ -271,10 +288,11 @@ class NrEpcGnbApplication : public Application
     Ipv4Address m_sgwS1uAddress;
 
     /**
-     * map of maps telling for each RNTI and BID the corresponding  S1-U TEID
-     *
+     * map of maps telling for each (CellId, RNTI) and BID the corresponding S1-U TEID
+     * The key is a pair of (cellId, rnti) to support intra-gNB handover where
+     * different cells may have the same RNTI value for different UEs.
      */
-    std::map<uint16_t, std::map<uint8_t, uint32_t>> m_rbidTeidMap;
+    std::map<std::pair<uint16_t, uint16_t>, std::map<uint8_t, uint32_t>> m_rbidTeidMap;
 
     /**
      * map telling for each S1-U TEID the corresponding RNTI,BID

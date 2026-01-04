@@ -905,7 +905,10 @@ NrGnbMac::DoReceivePhyPdu(Ptr<Packet> p)
     uint16_t rnti = tag.GetRnti();
     auto rntiIt = m_rlcAttached.find(rnti);
 
-    NS_ASSERT_MSG(rntiIt != m_rlcAttached.end(), "could not find RNTI" << rnti);
+    if (rntiIt == m_rlcAttached.end())
+    {
+        NS_ASSERT_MSG(false, "could not find RNTI" << rnti);
+    }
 
     // Try to peek whatever header; in the first byte there will be the LC ID.
     NrMacHeaderFsUl header;
@@ -940,7 +943,7 @@ NrGnbMac::DoReceivePhyPdu(Ptr<Packet> p)
     auto lcidIt = rntiIt->second.find(macHeader.GetLcId());
     if (lcidIt == rntiIt->second.end())
     {
-        NS_LOG_DEBUG("Discarding PDU addressed to non-existent LCID " << macHeader.GetLcId());
+        NS_LOG_WARN("RNTI " << rnti << " LCID " << +macHeader.GetLcId() << " not found");
         return;
     }
 

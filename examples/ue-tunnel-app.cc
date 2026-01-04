@@ -326,8 +326,15 @@ UeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
                       << srcAddr << " -> " << srcMac);
     }
 
-    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Upstream: "
-                  << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")");
+    // Log upstream packet capture (every 10th packet)
+    static uint64_t upstreamCount = 0;
+    upstreamCount++;
+    if (upstreamCount % 10 == 1 || m_handoverActive)
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] UPSTREAM #" << upstreamCount
+                      << " " << srcAddr << " -> " << dstAddr << " size=" << packet->GetSize()
+                      << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
+    }
 
     // Tunnel this packet - send the complete IP packet
     SendToTunnel(packet);
@@ -346,7 +353,7 @@ UeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket)
 
     if (!m_tunnelSocket)
     {
-        NS_LOG_ERROR("No tunnel socket");
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] ERROR: No tunnel socket!");
         return;
     }
 
@@ -360,12 +367,20 @@ UeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket)
     if (ret > 0)
     {
         m_txPackets++;
-        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Sent to tunnel: "
-                      << tunnelPacket->GetSize() << " bytes -> " << m_edgeServerIp);
+        // Log every 10th packet or if handover is active
+        if (m_txPackets % 10 == 1 || m_handoverActive)
+        {
+            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] TX #" << m_txPackets
+                          << " size=" << tunnelPacket->GetSize() << " -> " << m_edgeServerIp
+                          << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
+        }
     }
     else
     {
-        NS_LOG_ERROR("Failed to send to tunnel, ret=" << ret);
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] ERROR: SendTo failed! ret="
+                      << ret << " endpoint=" << m_edgeServerIp << ":" << m_tunnelPort
+                      << " txPackets=" << m_txPackets
+                      << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
     }
 }
 
@@ -387,10 +402,15 @@ UeTunnelApp::ReceiveFromTunnel(Ptr<Socket> socket)
         if (InetSocketAddress::IsMatchingType(from))
         {
             InetSocketAddress address = InetSocketAddress::ConvertFrom(from);
-            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Received from tunnel: "
-                          << packet->GetSize() << " bytes from " << address.GetIpv4());
-
             m_rxPackets++;
+
+            // Log every 10th packet or if handover is active
+            if (m_rxPackets % 10 == 1 || m_handoverActive)
+            {
+                NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] RX #" << m_rxPackets
+                              << " size=" << packet->GetSize() << " from " << address.GetIpv4()
+                              << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
+            }
 
             // Extract Zenoh sequence number from payload pattern "[XXXX]" and record latency
             // Enable debug for first 20 packets to diagnose parsing
@@ -489,16 +509,23 @@ UeTunnelApp::ForwardToInner(Ptr<Packet> packet)
         }
     }
 
-    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] Forward to inner: "
-                  << srcAddr << " -> " << dstAddr << " (size=" << packet->GetSize() << ")"
-                  << " dstMac=" << dstMac);
+    // Log forward to inner (every 10th packet)
+    static uint64_t forwardCount = 0;
+    forwardCount++;
+    if (forwardCount % 10 == 1)
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] FWD_TO_CLIENT #" << forwardCount
+                      << " " << srcAddr << " -> " << dstAddr << " size=" << packet->GetSize()
+                      << " dstMac=" << dstMac);
+    }
 
     // Send to inner device (CSMA -> tap bridge -> external client)
     bool success = m_innerDevice->Send(packet, dstMac, 0x0800);  // IP protocol
 
     if (!success)
     {
-        NS_LOG_ERROR("Failed to forward packet to inner device");
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] ERROR: FWD_TO_CLIENT failed! "
+                      << srcAddr << " -> " << dstAddr);
     }
 }
 

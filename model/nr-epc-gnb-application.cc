@@ -22,25 +22,31 @@ namespace ns3
 NS_LOG_COMPONENT_DEFINE("NrEpcGnbApplication");
 
 NrEpcGnbApplication::EpsFlowId_t::EpsFlowId_t()
+    : m_cellId(0),
+      m_rnti(0),
+      m_bid(0)
 {
 }
 
-NrEpcGnbApplication::EpsFlowId_t::EpsFlowId_t(const uint16_t a, const uint8_t b)
-    : m_rnti(a),
-      m_bid(b)
+NrEpcGnbApplication::EpsFlowId_t::EpsFlowId_t(const uint16_t cellId, const uint16_t rnti, const uint8_t bid)
+    : m_cellId(cellId),
+      m_rnti(rnti),
+      m_bid(bid)
 {
 }
 
 bool
 operator==(const NrEpcGnbApplication::EpsFlowId_t& a, const NrEpcGnbApplication::EpsFlowId_t& b)
 {
-    return ((a.m_rnti == b.m_rnti) && (a.m_bid == b.m_bid));
+    return ((a.m_cellId == b.m_cellId) && (a.m_rnti == b.m_rnti) && (a.m_bid == b.m_bid));
 }
 
 bool
 operator<(const NrEpcGnbApplication::EpsFlowId_t& a, const NrEpcGnbApplication::EpsFlowId_t& b)
 {
-    return ((a.m_rnti < b.m_rnti) || ((a.m_rnti == b.m_rnti) && (a.m_bid < b.m_bid)));
+    if (a.m_cellId != b.m_cellId) return a.m_cellId < b.m_cellId;
+    if (a.m_rnti != b.m_rnti) return a.m_rnti < b.m_rnti;
+    return a.m_bid < b.m_bid;
 }
 
 TypeId
@@ -156,14 +162,12 @@ NrEpcGnbApplication::DoPathSwitchRequest(NrEpcGnbS1SapProvider::PathSwitchReques
     for (auto bit = params.bearersToBeSwitched.begin(); bit != params.bearersToBeSwitched.end();
          ++bit)
     {
-        EpsFlowId_t flowId;
-        flowId.m_rnti = params.rnti;
-        flowId.m_bid = bit->epsBearerId;
         uint32_t teid = bit->teid;
 
-        EpsFlowId_t rbid(params.rnti, bit->epsBearerId);
+        EpsFlowId_t rbid(params.cellId, params.rnti, bit->epsBearerId);
         // side effect: create entries if not exist
-        m_rbidTeidMap[params.rnti][bit->epsBearerId] = teid;
+        auto key = std::make_pair(params.cellId, params.rnti);
+        m_rbidTeidMap[key][bit->epsBearerId] = teid;
         m_teidRbidMap[teid] = rbid;
 
         NrEpcS1apSapMme::ErabSwitchedInDownlinkItem erab;
@@ -177,20 +181,27 @@ NrEpcGnbApplication::DoPathSwitchRequest(NrEpcGnbS1SapProvider::PathSwitchReques
 }
 
 void
-NrEpcGnbApplication::DoUeContextRelease(uint16_t rnti)
+NrEpcGnbApplication::DoUeContextRelease(uint16_t rnti, uint16_t cellId)
 {
-    NS_LOG_FUNCTION(this << rnti);
-    auto rntiIt = m_rbidTeidMap.find(rnti);
-    if (rntiIt != m_rbidTeidMap.end())
+    NS_LOG_FUNCTION(this << rnti << cellId);
+
+    // Only clean up m_rbidTeidMap for this (cellId, rnti) pair.
+    // We do NOT erase from m_teidRbidMap because:
+    // 1. For intra-gNB handover, each cell has its own NrEpcGnbApplication instance
+    //    with its own m_teidRbidMap. The target cell's app has already set up
+    //    its mapping, so we shouldn't touch m_teidRbidMap here.
+    // 2. The TEID is a global identifier assigned by the SGW and remains valid
+    //    as long as the bearer exists. Erasing it would break packet forwarding.
+    // 3. For inter-gNB handover, the SGW updates its routing anyway, so stale
+    //    entries in m_teidRbidMap are harmless (packets won't arrive here).
+
+    auto key = std::make_pair(cellId, rnti);
+    auto keyIt = m_rbidTeidMap.find(key);
+    if (keyIt != m_rbidTeidMap.end())
     {
-        for (auto bidIt = rntiIt->second.begin(); bidIt != rntiIt->second.end(); ++bidIt)
-        {
-            uint32_t teid = bidIt->second;
-            m_teidRbidMap.erase(teid);
-            NS_LOG_INFO("TEID: " << teid << " erased");
-        }
-        m_rbidTeidMap.erase(rntiIt);
-        NS_LOG_INFO("RNTI: " << rntiIt->first << " erased");
+        m_rbidTeidMap.erase(keyIt);
+        NS_LOG_INFO("UeContextRelease: erased m_rbidTeidMap entry for cellId="
+                    << cellId << " RNTI=" << rnti);
     }
 }
 
@@ -217,10 +228,19 @@ NrEpcGnbApplication::DoInitialContextSetupRequest(
         params.gtpTeid = erabIt->sgwTeid;
         m_s1SapUser->DataRadioBearerSetupRequest(params);
 
-        EpsFlowId_t rbid(rnti, erabIt->erabId);
-        // side effect: create entries if not exist
-        m_rbidTeidMap[rnti][erabIt->erabId] = params.gtpTeid;
+        // Create initial bearer mapping using m_cellId.
+        // Note: m_cellId is fixed at construction and may not match the actual cell
+        // where the UE is attached in a multi-cell gNB. SetupS1Bearer (called from
+        // SetupDataRadioBearer) will update m_teidRbidMap with the correct cellId.
+        // This initial mapping ensures downlink packets can be forwarded.
+        EpsFlowId_t rbid(m_cellId, rnti, erabIt->erabId);
+        auto key = std::make_pair(m_cellId, rnti);
+        m_rbidTeidMap[key][erabIt->erabId] = params.gtpTeid;
         m_teidRbidMap[params.gtpTeid] = rbid;
+
+        NS_LOG_INFO("InitialContextSetup: cellId=" << m_cellId
+                    << " RNTI=" << rnti << " BID=" << +erabIt->erabId
+                    << " TEID=" << params.gtpTeid);
     }
 
     // Send Initial Context Setup Request to RRC
@@ -267,16 +287,36 @@ NrEpcGnbApplication::RecvFromNrSocket(Ptr<Socket> socket)
     uint16_t rnti = tag.GetRnti();
     uint8_t bid = tag.GetBid();
     NS_LOG_INFO("Received packet with RNTI: " << rnti << ", BID: " << +bid);
-    auto rntiIt = m_rbidTeidMap.find(rnti);
-    if (rntiIt == m_rbidTeidMap.end())
+
+    // Search for the RNTI across all cells (needed for multi-cell gNB)
+    // The key is (cellId, rnti), so we search for any entry with matching rnti
+    uint32_t teid = 0;
+    bool teidFound = false;
+    uint16_t foundCellId = 0;
+    for (const auto& entry : m_rbidTeidMap)
     {
-        NS_LOG_WARN("UE context not found, discarding packet");
+        if (entry.first.second == rnti) // entry.first is pair<cellId, rnti>
+        {
+            auto bidIt = entry.second.find(bid);
+            if (bidIt != entry.second.end())
+            {
+                teid = bidIt->second;
+                foundCellId = entry.first.first;
+                teidFound = true;
+                break;
+            }
+        }
+    }
+
+    if (!teidFound)
+    {
+        NS_LOG_WARN("UL packet drop: RNTI=" << rnti << " BID=" << +bid
+                    << " not in m_rbidTeidMap (size=" << m_rbidTeidMap.size() << ")");
     }
     else
     {
-        auto bidIt = rntiIt->second.find(bid);
-        NS_ASSERT(bidIt != rntiIt->second.end());
-        uint32_t teid = bidIt->second;
+        NS_LOG_INFO("UL forward: RNTI=" << rnti << " BID=" << +bid
+                    << " cellId=" << foundCellId << " TEID=" << teid);
         m_rxNrSocketPktTrace(packet->Copy());
         SendToS1uSocket(packet, teid);
     }
@@ -295,7 +335,7 @@ NrEpcGnbApplication::RecvFromS1uSocket(Ptr<Socket> socket)
     auto it = m_teidRbidMap.find(teid);
     if (it == m_teidRbidMap.end())
     {
-        NS_LOG_WARN("UE context at cell id " << m_cellId << " not found, discarding packet");
+        NS_LOG_WARN("Packet drop: TEID=" << teid << " not in m_teidRbidMap");
     }
     else
     {
@@ -361,6 +401,21 @@ NrEpcGnbApplication::DoReleaseIndication(uint64_t imsi, uint16_t rnti, uint8_t b
     // From 3GPP TS 23401-950 Section 5.4.4.2, gNB sends EPS bearer Identity in Bearer Release
     // Indication message to MME
     m_s1apSapMme->ErabReleaseIndication(imsi, rnti, erabToBeReleaseIndication);
+}
+
+void
+NrEpcGnbApplication::DoSetupS1Bearer(uint32_t teid, uint16_t rnti, uint8_t bid, uint16_t cellId)
+{
+    NS_LOG_FUNCTION(this << teid << rnti << +bid << cellId);
+
+    EpsFlowId_t rbid(cellId, rnti, bid);
+    // side effect: create entries if not exist
+    auto key = std::make_pair(cellId, rnti);
+    m_rbidTeidMap[key][bid] = teid;
+    m_teidRbidMap[teid] = rbid;
+
+    NS_LOG_INFO("SetupS1Bearer: cellId=" << cellId << " RNTI=" << rnti
+                << " BID=" << +bid << " TEID=" << teid);
 }
 
 } // namespace ns3

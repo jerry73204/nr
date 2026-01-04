@@ -373,6 +373,7 @@ NrUeMac::DoTransmitPdu(NrMacSapProvider::TransmitPduParameters params)
     NS_LOG_FUNCTION(this);
     if (m_ulDci == nullptr)
     {
+        NS_LOG_WARN("TX dropped: no UL DCI");
         return;
     }
     NS_ASSERT(m_ulDci);
@@ -1343,6 +1344,8 @@ NrUeMac::DoReset()
     m_noRaResponseReceivedEvent.Cancel();
     m_rachConfigured = false;
     m_ulBsrReceived.clear();
+    // Reset SR state to allow new scheduling requests after handover
+    m_srState = INACTIVE;
 }
 
 //////////////////////////////////////////////

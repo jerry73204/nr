@@ -72,8 +72,23 @@ class NrEpcGnbS1SapProvider
      * during X2-based handover
      *
      * @param rnti RNTI
+     * @param cellId Cell ID (needed for intra-gNB handover to distinguish RNTIs on different cells)
      */
-    virtual void UeContextRelease(uint16_t rnti) = 0;
+    virtual void UeContextRelease(uint16_t rnti, uint16_t cellId) = 0;
+
+    /**
+     * Setup S1 Bearer mapping for handover
+     *
+     * This method sets up the RNTI to TEID mapping in the EPC gNB application
+     * immediately during handover, before PathSwitchRequest is called.
+     * This prevents packet drops during the handover transition period.
+     *
+     * @param teid the Tunnel Endpoint Identifier
+     * @param rnti the RNTI of the UE
+     * @param bid the Bearer ID
+     * @param cellId Cell ID (needed for intra-gNB handover to distinguish RNTIs on different cells)
+     */
+    virtual void SetupS1Bearer(uint32_t teid, uint16_t rnti, uint8_t bid, uint16_t cellId) = 0;
 };
 
 /**
@@ -159,7 +174,8 @@ class NrMemberEpcGnbS1SapProvider : public NrEpcGnbS1SapProvider
     void DoSendReleaseIndication(uint64_t imsi, uint16_t rnti, uint8_t bearerId) override;
 
     void PathSwitchRequest(PathSwitchRequestParameters params) override;
-    void UeContextRelease(uint16_t rnti) override;
+    void UeContextRelease(uint16_t rnti, uint16_t cellId) override;
+    void SetupS1Bearer(uint32_t teid, uint16_t rnti, uint8_t bid, uint16_t cellId) override;
 
   private:
     C* m_owner; ///< owner class
@@ -196,9 +212,16 @@ NrMemberEpcGnbS1SapProvider<C>::PathSwitchRequest(PathSwitchRequestParameters pa
 
 template <class C>
 void
-NrMemberEpcGnbS1SapProvider<C>::UeContextRelease(uint16_t rnti)
+NrMemberEpcGnbS1SapProvider<C>::UeContextRelease(uint16_t rnti, uint16_t cellId)
 {
-    m_owner->DoUeContextRelease(rnti);
+    m_owner->DoUeContextRelease(rnti, cellId);
+}
+
+template <class C>
+void
+NrMemberEpcGnbS1SapProvider<C>::SetupS1Bearer(uint32_t teid, uint16_t rnti, uint8_t bid, uint16_t cellId)
+{
+    m_owner->DoSetupS1Bearer(teid, rnti, bid, cellId);
 }
 
 /**

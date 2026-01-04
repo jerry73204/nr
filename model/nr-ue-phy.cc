@@ -1110,11 +1110,12 @@ NrUePhy::UlData(const std::shared_ptr<DciInfoElementTdma>& dci)
     }
     else
     {
-        // put an error, as something is wrong. The UE should not be scheduled
-        // if there is no data for him...
+        // No data available - this can happen during/after handover when buffers are reset
+        // but the scheduler already allocated resources. Handle gracefully instead of fatal error.
         if (dci->m_type != DciInfoElementTdma::MSG3)
         {
-            NS_FATAL_ERROR("The UE " << dci->m_rnti << " has been scheduled without data");
+            NS_LOG_WARN("The UE " << dci->m_rnti << " has been scheduled without data (may occur during handover)");
+            return varTtiDuration;
         }
         else
         {

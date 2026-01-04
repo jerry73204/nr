@@ -9,6 +9,7 @@
 #include "nr-epc-gtpu-header.h"
 
 #include "ns3/log.h"
+#include "ns3/simulator.h"
 
 #include <map>
 
@@ -131,7 +132,13 @@ NrEpcSgwApplication::RecvFromS5uSocket(Ptr<Socket> socket)
     packet->RemoveHeader(gtpu);
     uint32_t teid = gtpu.GetTeid();
 
-    Ipv4Address gnbAddr = m_gnbByTeidMap[teid];
+    auto it = m_gnbByTeidMap.find(teid);
+    if (it == m_gnbByTeidMap.end())
+    {
+        NS_LOG_WARN("Packet drop: TEID=" << teid << " not found");
+        return;
+    }
+    Ipv4Address gnbAddr = it->second;
     NS_LOG_DEBUG("eNB " << gnbAddr << " TEID " << teid);
     SendToS1uSocket(packet, gnbAddr, teid);
 }
