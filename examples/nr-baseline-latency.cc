@@ -49,8 +49,10 @@
 #include "ns3/internet-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/nr-module.h"
+#include "ns3/ns2-mobility-helper.h"
 #include "ns3/point-to-point-module.h"
 
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -91,6 +93,10 @@ double g_handoverInterruptMs = 50.0;  // Total handover interruption time (ms)
 double g_networkDelayMs = 21.0;       // WAN + S1U delay (for calculating arrival at gNB)
 std::map<uint64_t, Time> g_handoverStartTime;  // IMSI -> actual handover start time
 std::map<uint64_t, Time> g_handoverEndTime;    // IMSI -> handover end time (start + interrupt)
+
+// Trajectory logging
+std::ofstream g_trajectoryFile;
+bool g_trajectoryLoggingEnabled = false;
 
 //==============================================================================
 // Callback Functions
@@ -264,7 +270,23 @@ HandoverEndErrorCallback(std::string path,
 void
 PrintUePosition(Ptr<Node> ueNode)
 {
-    Ptr<MobilityModel> mobility = ueNode->GetObject<MobilityModel>();
+    // Try to get the most specific mobility model
+    Ptr<MobilityModel> mobility = ueNode->GetObject<GaussMarkovMobilityModel>();
+    if (!mobility)
+    {
+        mobility = ueNode->GetObject<WaypointMobilityModel>();
+    }
+    if (!mobility)
+    {
+        mobility = ueNode->GetObject<MobilityModel>();
+    }
+    if (!mobility)
+    {
+        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE] No mobility model found");
+        Simulator::Schedule(Seconds(10.0), &PrintUePosition, ueNode);
+        return;
+    }
+
     Vector pos = mobility->GetPosition();
     Vector vel = mobility->GetVelocity();
 
@@ -276,6 +298,76 @@ PrintUePosition(Ptr<Node> ueNode)
                   << " cell=" << cellId);
 
     Simulator::Schedule(Seconds(10.0), &PrintUePosition, ueNode);
+}
+
+//==============================================================================
+// Helper Functions
+//==============================================================================
+
+/**
+ * @brief Build NS-3 random variable string for Normal velocity distribution
+ * @param mean Mean velocity in m/s
+ * @param variance Variance of velocity (m/s)^2
+ * @return String for NS-3 NormalRandomVariable attribute
+ */
+std::string
+BuildNormalVelocityString(double mean, double variance)
+{
+    std::ostringstream oss;
+    oss << "ns3::NormalRandomVariable[Mean=" << mean
+        << "|Variance=" << variance
+        << "|Bound=" << (3.0 * std::sqrt(variance)) << "]";
+    return oss.str();
+}
+
+/**
+ * @brief Write UE trajectory to CSV file
+ * @param ueNode UE node to log
+ * @param interval Logging interval in seconds
+ */
+void
+LogUeTrajectory(Ptr<Node> ueNode, double interval)
+{
+    if (!g_trajectoryLoggingEnabled)
+    {
+        return;
+    }
+
+    // Try to get the most specific mobility model
+    Ptr<MobilityModel> mobility = ueNode->GetObject<GaussMarkovMobilityModel>();
+    if (!mobility)
+    {
+        mobility = ueNode->GetObject<WaypointMobilityModel>();
+    }
+    if (!mobility)
+    {
+        mobility = ueNode->GetObject<MobilityModel>();
+    }
+    if (!mobility)
+    {
+        Simulator::Schedule(Seconds(interval), &LogUeTrajectory, ueNode, interval);
+        return;
+    }
+
+    Vector pos = mobility->GetPosition();
+    Vector vel = mobility->GetVelocity();
+    double speed = vel.GetLength();
+
+    uint16_t cellId = g_ueServingCell.count(g_ueImsi) ? g_ueServingCell[g_ueImsi] : 0;
+
+    g_trajectoryFile << std::fixed << std::setprecision(3)
+                     << Simulator::Now().GetSeconds() << ","
+                     << g_ueImsi << ","
+                     << pos.x << "," << pos.y << "," << pos.z << ","
+                     << vel.x << "," << vel.y << "," << vel.z << ","
+                     << speed << ","
+                     << cellId << "\n";
+
+    // Flush to ensure data is written even if simulation crashes
+    g_trajectoryFile.flush();
+
+    // Schedule next logging
+    Simulator::Schedule(Seconds(interval), &LogUeTrajectory, ueNode, interval);
 }
 
 //==============================================================================
@@ -296,8 +388,13 @@ main(int argc, char* argv[])
 
     // Mobility parameters
     double ueSpeed = 30.0;                   // UE speed in m/s (108 km/h)
+    double ueSpeedVariance = 2.0;            // Variance for Gaussian velocity (m/s)^2
+    double gaussAlpha = 0.85;                // Gauss-Markov memory factor (0=random, 1=linear)
+    double gaussTimeStep = 0.5;              // Gauss-Markov update interval (seconds)
+    std::string waypointFile = "";           // NS-2 format trace file (empty = use built-in path)
+    std::string builtinPath = "linear-y";    // Built-in paths: hexagonal, linear-y, zigzag, highway, urban-grid
     double simTime = 60.0;                   // Simulation time in seconds
-    std::string mobilityModel = "linear";    // linear or random
+    std::string mobilityModel = "linear";    // linear, random, gauss-markov, waypoint
 
     // NR parameters
     double centralFrequency = 3.5e9;         // 3.5 GHz (n78 band)
@@ -324,6 +421,10 @@ main(int argc, char* argv[])
     std::string simTag = "baseline";
     bool logging = false;
 
+    // Trajectory logging
+    std::string trajectoryOutputPath = "";       // Empty = disabled, path = enable CSV output
+    double trajectoryLogInterval = 0.5;          // Logging interval in seconds
+
     //--------------------------------------------------------------------------
     // Command line parsing
     //--------------------------------------------------------------------------
@@ -336,9 +437,14 @@ main(int argc, char* argv[])
     cmd.AddValue("isd", "Inter-site distance in meters", isd);
 
     // Mobility
-    cmd.AddValue("ueSpeed", "UE speed in m/s", ueSpeed);
+    cmd.AddValue("ueSpeed", "UE speed in m/s (mean for random distributions)", ueSpeed);
+    cmd.AddValue("ueSpeedVariance", "Velocity variance for Gaussian distribution", ueSpeedVariance);
+    cmd.AddValue("gaussAlpha", "Gauss-Markov memory factor (0-1)", gaussAlpha);
+    cmd.AddValue("gaussTimeStep", "Gauss-Markov update interval in seconds", gaussTimeStep);
+    cmd.AddValue("waypointFile", "NS-2 format mobility trace file path", waypointFile);
+    cmd.AddValue("builtinPath", "Built-in path: hexagonal, linear-y, zigzag, highway, urban-grid", builtinPath);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
-    cmd.AddValue("mobilityModel", "Mobility model (linear, random)", mobilityModel);
+    cmd.AddValue("mobilityModel", "Mobility model (linear, random, gauss-markov, waypoint)", mobilityModel);
 
     // NR
     cmd.AddValue("centralFrequency", "Central frequency in Hz", centralFrequency);
@@ -362,6 +468,10 @@ main(int argc, char* argv[])
     cmd.AddValue("outputFile", "CSV output filename", outputFile);
     cmd.AddValue("simTag", "Simulation tag for output files", simTag);
     cmd.AddValue("logging", "Enable detailed logging", logging);
+
+    // Trajectory logging
+    cmd.AddValue("trajectoryOutputPath", "Path for trajectory CSV file (empty=disabled)", trajectoryOutputPath);
+    cmd.AddValue("trajectoryLogInterval", "Trajectory logging interval in seconds", trajectoryLogInterval);
 
     cmd.Parse(argc, argv);
 
@@ -388,7 +498,13 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("==============================================");
     NS_LOG_UNCOND("Topology: " << (numRings == 0 ? 1 : (numRings == 1 ? 7 : 19)) << " sites");
     NS_LOG_UNCOND("Scenario: " << scenario << ", ISD: " << isd << " m");
+    NS_LOG_UNCOND("Mobility: " << mobilityModel
+                  << (mobilityModel == "waypoint" ? " (" + builtinPath + ")" : ""));
     NS_LOG_UNCOND("UE Speed: " << ueSpeed << " m/s (" << ueSpeed * 3.6 << " km/h)");
+    if (mobilityModel == "gauss-markov")
+    {
+        NS_LOG_UNCOND("  Gauss-Markov: alpha=" << gaussAlpha << ", timeStep=" << gaussTimeStep << "s");
+    }
     NS_LOG_UNCOND("WAN Delay: " << wanDelayMs << " ms (one-way)");
     NS_LOG_UNCOND("Handover Interruption: " << handoverInterruptMs << " ms");
     NS_LOG_UNCOND("SLA Threshold: " << slaThresholdMs << " ms");
@@ -422,20 +538,214 @@ main(int argc, char* argv[])
     gridScenario.SetUtNumber(1);  // Single UE (vehicle)
     gridScenario.SetSimTag(simTag);
 
+    // Calculate grid bounds for mobility models
+    double gridRadius = isd * (numRings + 1);
+
     if (mobilityModel == "linear")
     {
         // Linear mobility: UE moves in +Y direction (toward Site 2 for handover)
         gridScenario.CreateScenarioWithMobility(Vector(0, ueSpeed, 0), 0.0);
     }
-    else
+    else if (mobilityModel == "gauss-markov")
     {
-        // Random waypoint mobility
+        // Create static scenario first, then replace mobility on UE
         gridScenario.CreateScenario();
 
-        NodeContainer ueNodes = gridScenario.GetUserTerminals();
+        NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
+
+        // Create Gauss-Markov mobility model directly and set position
+        Ptr<GaussMarkovMobilityModel> gaussMobility = CreateObject<GaussMarkovMobilityModel>();
+        gaussMobility->SetAttribute("Bounds", BoxValue(Box(-gridRadius, gridRadius, -gridRadius, gridRadius, 0, 10)));
+        gaussMobility->SetAttribute("TimeStep", TimeValue(Seconds(gaussTimeStep)));
+        gaussMobility->SetAttribute("Alpha", DoubleValue(gaussAlpha));
+        gaussMobility->SetAttribute("MeanVelocity", StringValue(BuildNormalVelocityString(ueSpeed, ueSpeedVariance)));
+        gaussMobility->SetAttribute("MeanDirection", StringValue("ns3::UniformRandomVariable[Min=0|Max=6.283185307]"));
+        gaussMobility->SetAttribute("MeanPitch", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+        gaussMobility->SetAttribute("NormalVelocity", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=1.0|Bound=10.0]"));
+        gaussMobility->SetAttribute("NormalDirection", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.2|Bound=0.4]"));
+        gaussMobility->SetAttribute("NormalPitch", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.0|Bound=0.0]"));
+
+        // Set initial position near center
+        gaussMobility->SetPosition(Vector(0.0, 50.0, 1.5));
+
+        // Replace mobility model on UE
+        Ptr<Node> firstUe = ueNodesTemp.Get(0);
+        firstUe->AggregateObject(gaussMobility);
+
+        NS_LOG_UNCOND("Gauss-Markov mobility: alpha=" << gaussAlpha
+                    << " meanSpeed=" << ueSpeed << " m/s"
+                    << " variance=" << ueSpeedVariance);
+    }
+    else if (mobilityModel == "waypoint")
+    {
+        // Determine initial position based on path
+        Vector startPos(0, 50, 1.5);  // Default start position
+        if (builtinPath == "highway")
+        {
+            startPos = Vector(-400, -400, 1.5);
+        }
+        else if (builtinPath == "urban-grid")
+        {
+            startPos = Vector(-200, -200, 1.5);
+        }
+
+        // Configure MobilityHelper with WaypointMobilityModel
+        MobilityHelper waypointHelper;
+        waypointHelper.SetMobilityModel("ns3::WaypointMobilityModel");
+        Ptr<ListPositionAllocator> posAlloc = CreateObject<ListPositionAllocator>();
+        posAlloc->Add(startPos);
+        waypointHelper.SetPositionAllocator(posAlloc);
+
+        // Create scenario with custom mobility
+        gridScenario.CreateScenarioWithCustomMobility(waypointHelper);
+
+        NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
+
+        if (!waypointFile.empty())
+        {
+            // Load from NS-2 format file
+            Ns2MobilityHelper ns2(waypointFile);
+            ns2.Install();
+            NS_LOG_UNCOND("Waypoint mobility loaded from file: " << waypointFile);
+        }
+        else
+        {
+            // Get the installed WaypointMobilityModel and add waypoints
+            Ptr<WaypointMobilityModel> waypointMm =
+                ueNodesTemp.Get(0)->GetObject<WaypointMobilityModel>();
+
+            if (!waypointMm)
+            {
+                NS_FATAL_ERROR("Failed to get WaypointMobilityModel from UE");
+            }
+
+            if (builtinPath == "hexagonal")
+            {
+                // Circular path visiting all sites (triggers multiple handovers)
+                double hexSpeed = 12.0;  // m/s for this path
+                double t = 0.0;
+
+                // Start near center (Site 0)
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 50, 1.5)));
+
+                // Move to near Site 1 (433, 250) - distance ~450m
+                t += 450.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(400, 230, 1.5)));
+
+                // Move to near Site 2 (0, 500) - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 480, 1.5)));
+
+                // Move to near Site 3 (-433, 250) - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-400, 230, 1.5)));
+
+                // Move to near Site 4 (-433, -250) - distance ~480m
+                t += 480.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-400, -230, 1.5)));
+
+                // Move to near Site 5 (0, -500) - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -480, 1.5)));
+
+                // Move to near Site 6 (433, -250) - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(400, -230, 1.5)));
+
+                // Return to center - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 50, 1.5)));
+
+                NS_LOG_UNCOND("Waypoint mobility: hexagonal path visiting all sites (total time=" << t << "s)");
+            }
+            else if (builtinPath == "linear-y")
+            {
+                double totalDist = 450.0;
+                double travelTime = totalDist / ueSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(0, 500, 1.5)));
+                NS_LOG_UNCOND("Waypoint mobility: linear-y path toward Site 2 (time=" << travelTime << "s)");
+            }
+            else if (builtinPath == "zigzag")
+            {
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(20), Vector(150, 150, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(40), Vector(-150, 250, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(60), Vector(150, 350, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(80), Vector(-150, 450, 1.5)));
+                NS_LOG_UNCOND("Waypoint mobility: zigzag path crossing sectors");
+            }
+            else if (builtinPath == "highway")
+            {
+                double highwaySpeed = 20.0;
+                double distance = std::sqrt(2) * 800.0;
+                double travelTime = distance / highwaySpeed;
+
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(-400, -400, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(400, 400, 1.5)));
+                NS_LOG_UNCOND("Waypoint mobility: highway path (speed=" << highwaySpeed
+                            << " m/s, travel time=" << travelTime << "s)");
+            }
+            else if (builtinPath == "urban-grid")
+            {
+                double driveSpeed = 10.0;
+                double blockSize = 200.0;
+                double blockTime = blockSize / driveSpeed;
+                double stopTime = 5.0;
+
+                double t = 0.0;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-200, -200, 1.5)));
+
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -200, 1.5)));
+                t += stopTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -200, 1.5)));
+
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+                t += stopTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 0, 1.5)));
+                t += stopTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 0, 1.5)));
+
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 200, 1.5)));
+                t += stopTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(200, 200, 1.5)));
+
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 200, 1.5)));
+                t += stopTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 200, 1.5)));
+
+                t += blockTime;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 400, 1.5)));
+
+                NS_LOG_UNCOND("Waypoint mobility: urban-grid path with " << stopTime
+                            << "s stops at intersections (total time=" << t << "s)");
+            }
+            else
+            {
+                NS_LOG_WARN("Unknown builtinPath: " << builtinPath << ", using linear-y");
+                double totalDist = 450.0;
+                double travelTime = totalDist / ueSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
+                waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(0, 500, 1.5)));
+            }
+        }
+    }
+    else if (mobilityModel == "random")
+    {
+        // For random waypoint, first create static scenario
+        gridScenario.CreateScenario();
+
+        // Then install random waypoint mobility on UEs
+        NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
         MobilityHelper mobilityHelper;
 
-        double gridRadius = isd * (numRings + 1);
         Ptr<RandomBoxPositionAllocator> posAlloc = CreateObject<RandomBoxPositionAllocator>();
         posAlloc->SetAttribute("X", StringValue("ns3::UniformRandomVariable[Min=-" +
             std::to_string(gridRadius) + "|Max=" + std::to_string(gridRadius) + "]"));
@@ -445,11 +755,16 @@ main(int argc, char* argv[])
 
         mobilityHelper.SetPositionAllocator(posAlloc);
         mobilityHelper.SetMobilityModel("ns3::RandomWaypointMobilityModel",
-            "Speed", StringValue("ns3::ConstantRandomVariable[Constant=" + std::to_string(ueSpeed) + "]"),
+            "Speed", StringValue(BuildNormalVelocityString(ueSpeed, ueSpeedVariance)),
             "Pause", StringValue("ns3::ConstantRandomVariable[Constant=0]"),
             "PositionAllocator", PointerValue(posAlloc));
 
-        mobilityHelper.Install(ueNodes);
+        mobilityHelper.Install(ueNodesTemp);
+        NS_LOG_UNCOND("Random waypoint mobility with Normal velocity distribution");
+    }
+    else
+    {
+        NS_FATAL_ERROR("Unknown mobilityModel: " << mobilityModel);
     }
 
     NodeContainer gnbNodes = gridScenario.GetBaseStations();
@@ -457,7 +772,7 @@ main(int argc, char* argv[])
 
     NS_LOG_UNCOND("Created " << gnbNodes.GetN() << " gNBs and " << ueNodes.GetN() << " UE(s)");
 
-    // Position UE near center for initial attachment
+    // Position UE near center for initial attachment (linear mobility only)
     if (mobilityModel == "linear")
     {
         Ptr<ConstantVelocityMobilityModel> ueMobility =
@@ -635,6 +950,31 @@ main(int argc, char* argv[])
     Simulator::Schedule(Seconds(1.0), &PrintUePosition, ueNodes.Get(0));
 
     //--------------------------------------------------------------------------
+    // Initialize trajectory logging (if enabled)
+    //--------------------------------------------------------------------------
+
+    if (!trajectoryOutputPath.empty())
+    {
+        g_trajectoryFile.open(trajectoryOutputPath);
+        if (g_trajectoryFile.is_open())
+        {
+            g_trajectoryLoggingEnabled = true;
+            // Write CSV header
+            g_trajectoryFile << "time_s,imsi,x,y,z,vx,vy,vz,speed,cell_id\n";
+
+            // Schedule first logging
+            Simulator::Schedule(Seconds(trajectoryLogInterval), &LogUeTrajectory, ueNodes.Get(0), trajectoryLogInterval);
+
+            NS_LOG_UNCOND("Trajectory logging enabled: " << trajectoryOutputPath
+                          << " (interval=" << trajectoryLogInterval << "s)");
+        }
+        else
+        {
+            NS_LOG_WARN("Failed to open trajectory file: " << trajectoryOutputPath);
+        }
+    }
+
+    //--------------------------------------------------------------------------
     // Run simulation
     //--------------------------------------------------------------------------
 
@@ -710,6 +1050,13 @@ main(int argc, char* argv[])
     std::string flowmonFile = simTag + "-flowmon.xml";
     monitor->SerializeToXmlFile(flowmonFile, true, true);
     NS_LOG_UNCOND("\nFlowMonitor XML: " << flowmonFile);
+
+    // Close trajectory file
+    if (g_trajectoryLoggingEnabled && g_trajectoryFile.is_open())
+    {
+        g_trajectoryFile.close();
+        NS_LOG_UNCOND("Trajectory saved to: " << trajectoryOutputPath);
+    }
 
     NS_LOG_UNCOND("==============================================\n");
 
