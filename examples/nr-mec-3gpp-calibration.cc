@@ -863,15 +863,46 @@ main(int argc, char* argv[])
             if (builtinPath == "hexagonal")
             {
                 // Circular path visiting all sites (triggers multiple handovers)
-                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
-                waypointMm->AddWaypoint(Waypoint(Seconds(30), Vector(200, 200, 1.5)));
-                waypointMm->AddWaypoint(Waypoint(Seconds(60), Vector(0, 400, 1.5)));
-                waypointMm->AddWaypoint(Waypoint(Seconds(90), Vector(-200, 200, 1.5)));
-                waypointMm->AddWaypoint(Waypoint(Seconds(120), Vector(-200, -200, 1.5)));
-                waypointMm->AddWaypoint(Waypoint(Seconds(150), Vector(0, -400, 1.5)));
-                waypointMm->AddWaypoint(Waypoint(Seconds(180), Vector(200, -200, 1.5)));
-                waypointMm->AddWaypoint(Waypoint(Seconds(210), Vector(0, 50, 1.5)));
-                NS_LOG_INFO("Waypoint mobility: hexagonal path visiting all sites");
+                // Site positions with ISD=500m:
+                //   Site 0: (0, 0), Site 1: (433, 250), Site 2: (0, 500)
+                //   Site 3: (-433, 250), Site 4: (-433, -250), Site 5: (0, -500)
+                //   Site 6: (433, -250)
+                // Path goes close to each outer site to trigger handovers
+                double hexSpeed = 12.0;  // m/s for this path
+                double t = 0.0;
+
+                // Start near center (Site 0)
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 50, 1.5)));
+
+                // Move to near Site 1 (433, 250) - distance ~450m
+                t += 450.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(400, 230, 1.5)));
+
+                // Move to near Site 2 (0, 500) - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 480, 1.5)));
+
+                // Move to near Site 3 (-433, 250) - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-400, 230, 1.5)));
+
+                // Move to near Site 4 (-433, -250) - distance ~480m
+                t += 480.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-400, -230, 1.5)));
+
+                // Move to near Site 5 (0, -500) - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -480, 1.5)));
+
+                // Move to near Site 6 (433, -250) - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(400, -230, 1.5)));
+
+                // Return to center - distance ~470m
+                t += 470.0 / hexSpeed;
+                waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 50, 1.5)));
+
+                NS_LOG_INFO("Waypoint mobility: hexagonal path visiting all sites (total time=" << t << "s)");
             }
             else if (builtinPath == "linear-y")
             {
@@ -892,7 +923,7 @@ main(int argc, char* argv[])
             }
             else if (builtinPath == "highway")
             {
-                double highwaySpeed = 30.0;
+                double highwaySpeed = 20.0;
                 double distance = std::sqrt(2) * 800.0;
                 double travelTime = distance / highwaySpeed;
 
@@ -1011,7 +1042,7 @@ main(int argc, char* argv[])
         {
             // Start slightly offset from center, move toward Site 2 (at 0, 500)
             // This will enter Site 2's Sector 2 (pointing 270°, i.e., downward)
-            firstUeMobility->SetPosition(Vector(0.0, 50.0, 1.5));
+            firstUeMobility->SetPosition(Vector(0.0, -200.0, 1.5));
             // Move purely in +Y direction toward Site 2
             firstUeMobility->SetVelocity(Vector(0.0, ueSpeed, 0.0));
             NS_LOG_INFO("First UE positioned at (0, 200, 1.5) moving toward Site 2 at "
