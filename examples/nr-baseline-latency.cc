@@ -404,7 +404,12 @@ main(int argc, char* argv[])
 
     // Traffic parameters (DL control commands only)
     uint32_t packetSize = 100;               // Control packet size in bytes
-    double intervalMs = 50.0;                // Packet interval in ms (50 Hz)
+    double intervalMs = 50.0;                // Packet interval in ms (20 Hz)
+
+    // Background UE parameters for cell load
+    uint32_t numBackgroundUes = 0;           // Number of stationary background UEs (0 = disabled)
+    double bgUeTrafficMbps = 5.0;            // Traffic rate per background UE in Mbps
+    uint32_t bgUePacketSize = 1200;          // Background UE packet size in bytes
 
     // Network delays
     double wanDelayMs = 20.0;                // WAN delay in ms (one-way, central cloud)
@@ -455,6 +460,11 @@ main(int argc, char* argv[])
     // Traffic
     cmd.AddValue("packetSize", "Control packet size in bytes", packetSize);
     cmd.AddValue("intervalMs", "Packet interval in ms", intervalMs);
+
+    // Background UEs for cell load
+    cmd.AddValue("numBackgroundUes", "Number of stationary background UEs for cell load", numBackgroundUes);
+    cmd.AddValue("bgUeTrafficMbps", "Traffic rate per background UE in Mbps", bgUeTrafficMbps);
+    cmd.AddValue("bgUePacketSize", "Background UE packet size in bytes", bgUePacketSize);
 
     // Network
     cmd.AddValue("wanDelayMs", "WAN delay in ms (one-way)", wanDelayMs);
@@ -508,7 +518,15 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("WAN Delay: " << wanDelayMs << " ms (one-way)");
     NS_LOG_UNCOND("Handover Interruption: " << handoverInterruptMs << " ms");
     NS_LOG_UNCOND("SLA Threshold: " << slaThresholdMs << " ms");
-    NS_LOG_UNCOND("Traffic: " << packetSize << " bytes every " << intervalMs << " ms");
+    NS_LOG_UNCOND("DL Control: " << packetSize << " bytes every " << intervalMs << " ms");
+    if (numBackgroundUes > 0)
+    {
+        NS_LOG_UNCOND("----------------------------------------------");
+        NS_LOG_UNCOND("Background UEs: " << numBackgroundUes);
+        NS_LOG_UNCOND("  Traffic per UE: " << bgUeTrafficMbps << " Mbps ("
+                      << bgUePacketSize << " bytes/packet)");
+        NS_LOG_UNCOND("  Total cell load: " << (numBackgroundUes * bgUeTrafficMbps) << " Mbps");
+    }
     NS_LOG_UNCOND("Simulation: " << simTime << " s");
     NS_LOG_UNCOND("==============================================\n");
 
@@ -548,33 +566,37 @@ main(int argc, char* argv[])
     }
     else if (mobilityModel == "gauss-markov")
     {
-        // Create static scenario first, then replace mobility on UE
-        gridScenario.CreateScenario();
+        // Use CreateScenarioWithCustomMobility to avoid aggregation issues
+        // (aggregation causes channel model to use old static mobility)
 
-        NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
+        // Tighter bounds to keep UE within multi-site coverage area
+        // With ISD=500m, outer sites are at ~289m radius, so use ~400m bounds
+        double gaussBounds = isd / std::sqrt(3.0) + 100.0;
 
-        // Create Gauss-Markov mobility model directly and set position
-        Ptr<GaussMarkovMobilityModel> gaussMobility = CreateObject<GaussMarkovMobilityModel>();
-        gaussMobility->SetAttribute("Bounds", BoxValue(Box(-gridRadius, gridRadius, -gridRadius, gridRadius, 0, 10)));
-        gaussMobility->SetAttribute("TimeStep", TimeValue(Seconds(gaussTimeStep)));
-        gaussMobility->SetAttribute("Alpha", DoubleValue(gaussAlpha));
-        gaussMobility->SetAttribute("MeanVelocity", StringValue(BuildNormalVelocityString(ueSpeed, ueSpeedVariance)));
-        gaussMobility->SetAttribute("MeanDirection", StringValue("ns3::UniformRandomVariable[Min=0|Max=6.283185307]"));
-        gaussMobility->SetAttribute("MeanPitch", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
-        gaussMobility->SetAttribute("NormalVelocity", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=1.0|Bound=10.0]"));
-        gaussMobility->SetAttribute("NormalDirection", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.2|Bound=0.4]"));
-        gaussMobility->SetAttribute("NormalPitch", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.0|Bound=0.0]"));
+        MobilityHelper gaussHelper;
+        gaussHelper.SetMobilityModel("ns3::GaussMarkovMobilityModel",
+            "Bounds", BoxValue(Box(-gaussBounds, gaussBounds, -gaussBounds, gaussBounds, 0, 10)),
+            "TimeStep", TimeValue(Seconds(gaussTimeStep)),
+            "Alpha", DoubleValue(gaussAlpha),
+            "MeanVelocity", StringValue(BuildNormalVelocityString(ueSpeed, ueSpeedVariance)),
+            "MeanDirection", StringValue("ns3::UniformRandomVariable[Min=0|Max=6.283185307]"),
+            "MeanPitch", StringValue("ns3::ConstantRandomVariable[Constant=0]"),
+            "NormalVelocity", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=1.0|Bound=10.0]"),
+            "NormalDirection", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.6|Bound=1.2]"),
+            "NormalPitch", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.0|Bound=0.0]"));
 
-        // Set initial position near center
-        gaussMobility->SetPosition(Vector(0.0, 50.0, 1.5));
+        // Set initial position between Site 0 and Site 1 (~150m from center)
+        // This increases chance of crossing site boundaries and triggering handovers
+        Ptr<ListPositionAllocator> gaussPosAlloc = CreateObject<ListPositionAllocator>();
+        gaussPosAlloc->Add(Vector(150.0, 0.0, 1.5));
+        gaussHelper.SetPositionAllocator(gaussPosAlloc);
 
-        // Replace mobility model on UE
-        Ptr<Node> firstUe = ueNodesTemp.Get(0);
-        firstUe->AggregateObject(gaussMobility);
+        // Create scenario with custom mobility (no aggregation issues)
+        gridScenario.CreateScenarioWithCustomMobility(gaussHelper);
 
         NS_LOG_UNCOND("Gauss-Markov mobility: alpha=" << gaussAlpha
                     << " meanSpeed=" << ueSpeed << " m/s"
-                    << " variance=" << ueSpeedVariance);
+                    << " bounds=" << gaussBounds << "m");
     }
     else if (mobilityModel == "waypoint")
     {
@@ -784,6 +806,52 @@ main(int argc, char* argv[])
         }
     }
 
+    // Create background UEs for cell load (stationary, bidirectional traffic)
+    NodeContainer backgroundUeNodes;
+    if (numBackgroundUes > 0)
+    {
+        backgroundUeNodes.Create(numBackgroundUes);
+
+        // Place background UEs near each site (1 per site, then cycle)
+        // Site positions: center at (0,0), 6 outer sites at ~433m radius, 60° apart
+        MobilityHelper bgMobility;
+        Ptr<ListPositionAllocator> bgPosAlloc = CreateObject<ListPositionAllocator>();
+
+        // Calculate site positions (7 sites for numRings=1)
+        std::vector<Vector> sitePositions;
+        sitePositions.push_back(Vector(0, 0, 0));  // Center site
+
+        double siteRadius = isd / std::sqrt(3.0);  // ~433m for ISD=500m
+        for (int s = 0; s < 6; s++)
+        {
+            double siteAngle = M_PI / 6.0 + s * M_PI / 3.0;  // 30°, 90°, 150°, etc.
+            sitePositions.push_back(Vector(siteRadius * cos(siteAngle),
+                                           siteRadius * sin(siteAngle), 0));
+        }
+
+        // Place UEs near sites (offset by 100m to be within cell coverage)
+        double ueOffset = 100.0;
+        for (uint32_t i = 0; i < numBackgroundUes; i++)
+        {
+            uint32_t siteIdx = i % sitePositions.size();
+            Vector sitePos = sitePositions[siteIdx];
+
+            // Offset UE from site center (rotate offset for multiple UEs per site)
+            double offsetAngle = 2.0 * M_PI * (i / sitePositions.size()) / 3.0;
+            Vector pos(sitePos.x + ueOffset * cos(offsetAngle),
+                       sitePos.y + ueOffset * sin(offsetAngle),
+                       1.5);
+            bgPosAlloc->Add(pos);
+        }
+
+        bgMobility.SetPositionAllocator(bgPosAlloc);
+        bgMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+        bgMobility.Install(backgroundUeNodes);
+
+        NS_LOG_UNCOND("Created " << numBackgroundUes << " background UE(s) distributed across "
+                      << sitePositions.size() << " sites");
+    }
+
     //--------------------------------------------------------------------------
     // Set up NR network
     //--------------------------------------------------------------------------
@@ -844,6 +912,13 @@ main(int argc, char* argv[])
         nrHelper->GetGnbPhy(gnbNetDevs.Get(i), 0)->SetAttribute("TxPower", DoubleValue(gnbTxPower));
     }
 
+    // Install NR devices on background UEs
+    NetDeviceContainer bgUeNetDevs;
+    if (numBackgroundUes > 0)
+    {
+        bgUeNetDevs = nrHelper->InstallUeDevice(backgroundUeNodes, allBwps);
+    }
+
     //--------------------------------------------------------------------------
     // Set up Remote Host with P2P link to PGW
     //--------------------------------------------------------------------------
@@ -863,6 +938,12 @@ main(int argc, char* argv[])
     InternetStackHelper internet;
     internet.Install(ueNodes);
 
+    // Install internet stack on background UEs
+    if (numBackgroundUes > 0)
+    {
+        internet.Install(backgroundUeNodes);
+    }
+
     Ipv4InterfaceContainer ueIpIfaces = epcHelper->AssignUeIpv4Address(ueNetDevs);
     Ipv4Address ueIp = ueIpIfaces.GetAddress(0);
 
@@ -874,12 +955,35 @@ main(int argc, char* argv[])
 
     NS_LOG_UNCOND("UE IP: " << ueIp);
 
+    // Assign IPs and configure routes for background UEs
+    std::vector<Ipv4Address> bgUeIps;
+    if (numBackgroundUes > 0)
+    {
+        for (uint32_t i = 0; i < numBackgroundUes; i++)
+        {
+            Ipv4InterfaceContainer bgUeIpIface =
+                epcHelper->AssignUeIpv4Address(NetDeviceContainer(bgUeNetDevs.Get(i)));
+            bgUeIps.push_back(bgUeIpIface.GetAddress(0));
+
+            // Set default route
+            Ptr<Ipv4StaticRouting> bgUeRouting =
+                ipv4RoutingHelper.GetStaticRouting(backgroundUeNodes.Get(i)->GetObject<Ipv4>());
+            bgUeRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
+        }
+    }
+
     //--------------------------------------------------------------------------
     // Attach UE and configure X2 for handover
     //--------------------------------------------------------------------------
 
     nrHelper->AttachToClosestGnb(ueNetDevs, gnbNetDevs);
     nrHelper->AddX2Interface(gnbNodes);
+
+    // Attach background UEs to closest gNB
+    if (numBackgroundUes > 0)
+    {
+        nrHelper->AttachToClosestGnb(bgUeNetDevs, gnbNetDevs);
+    }
 
     // Get UE IMSI and initial serving cell
     Ptr<NrUeNetDevice> ueDev = ueNetDevs.Get(0)->GetObject<NrUeNetDevice>();
@@ -917,6 +1021,45 @@ main(int argc, char* argv[])
     ApplicationContainer dlSinkApp = dlSink.Install(ueNodes.Get(0));
     dlSinkApp.Start(appStartTime);
     dlSinkApp.Stop(Seconds(simTime));
+
+    //--------------------------------------------------------------------------
+    // Install DL-only traffic on background UEs (creates cell load)
+    //--------------------------------------------------------------------------
+
+    if (numBackgroundUes > 0)
+    {
+        uint16_t bgBasePort = 4000;
+        double bgDataRateBps = bgUeTrafficMbps * 1e6;
+
+        for (uint32_t i = 0; i < numBackgroundUes; i++)
+        {
+            uint16_t dlPort = bgBasePort + i;
+
+            // Stagger start times: 100ms apart to avoid simultaneous bursts
+            Time bgStartTime = appStartTime + MilliSeconds(100 * i);
+
+            // DL only: Remote Host -> Background UE (avoids TDD collision)
+            OnOffHelper bgDlOnOff("ns3::UdpSocketFactory",
+                                   InetSocketAddress(bgUeIps[i], dlPort));
+            bgDlOnOff.SetConstantRate(DataRate(bgDataRateBps));
+            bgDlOnOff.SetAttribute("PacketSize", UintegerValue(bgUePacketSize));
+
+            ApplicationContainer bgDlApp = bgDlOnOff.Install(remoteHost);
+            bgDlApp.Start(bgStartTime);
+            bgDlApp.Stop(Seconds(simTime));
+
+            PacketSinkHelper bgDlSink("ns3::UdpSocketFactory",
+                                       InetSocketAddress(Ipv4Address::GetAny(), dlPort));
+            ApplicationContainer bgDlSinkApp = bgDlSink.Install(backgroundUeNodes.Get(i));
+            bgDlSinkApp.Start(bgStartTime);
+            bgDlSinkApp.Stop(Seconds(simTime));
+        }
+
+        NS_LOG_UNCOND("Background DL traffic: " << numBackgroundUes << " UEs x "
+                      << bgUeTrafficMbps << " Mbps = "
+                      << (numBackgroundUes * bgUeTrafficMbps) << " Mbps total"
+                      << " (staggered start: 100ms apart)");
+    }
 
     //--------------------------------------------------------------------------
     // Connect trace sources

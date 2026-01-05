@@ -779,43 +779,37 @@ main(int argc, char* argv[])
     }
     else if (mobilityModel == "gauss-markov")
     {
-        // Create static scenario first, then replace mobility on first UE
-        gridScenario.CreateScenario();
+        // Use CreateScenarioWithCustomMobility to avoid aggregation issues
+        // (aggregation causes channel model to use old static mobility)
 
-        NodeContainer ueNodesTemp = gridScenario.GetUserTerminals();
+        // Tighter bounds to keep UE within multi-site coverage area
+        // With ISD=500m, outer sites are at ~289m radius, so use ~400m bounds
+        double gaussBounds = isd / std::sqrt(3.0) + 100.0;
 
-        // Create Gauss-Markov mobility model directly and set position
-        Ptr<GaussMarkovMobilityModel> gaussMobility = CreateObject<GaussMarkovMobilityModel>();
-        gaussMobility->SetAttribute("Bounds", BoxValue(Box(-gridRadius, gridRadius, -gridRadius, gridRadius, 0, 10)));
-        gaussMobility->SetAttribute("TimeStep", TimeValue(Seconds(gaussTimeStep)));
-        gaussMobility->SetAttribute("Alpha", DoubleValue(gaussAlpha));
-        gaussMobility->SetAttribute("MeanVelocity", StringValue(BuildNormalVelocityString(ueSpeed, ueSpeedVariance)));
-        gaussMobility->SetAttribute("MeanDirection", StringValue("ns3::UniformRandomVariable[Min=0|Max=6.283185307]"));
-        gaussMobility->SetAttribute("MeanPitch", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
-        gaussMobility->SetAttribute("NormalVelocity", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=1.0|Bound=10.0]"));
-        gaussMobility->SetAttribute("NormalDirection", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.2|Bound=0.4]"));
-        gaussMobility->SetAttribute("NormalPitch", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.0|Bound=0.0]"));
+        MobilityHelper gaussHelper;
+        gaussHelper.SetMobilityModel("ns3::GaussMarkovMobilityModel",
+            "Bounds", BoxValue(Box(-gaussBounds, gaussBounds, -gaussBounds, gaussBounds, 0, 10)),
+            "TimeStep", TimeValue(Seconds(gaussTimeStep)),
+            "Alpha", DoubleValue(gaussAlpha),
+            "MeanVelocity", StringValue(BuildNormalVelocityString(ueSpeed, ueSpeedVariance)),
+            "MeanDirection", StringValue("ns3::UniformRandomVariable[Min=0|Max=6.283185307]"),
+            "MeanPitch", StringValue("ns3::ConstantRandomVariable[Constant=0]"),
+            "NormalVelocity", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=1.0|Bound=10.0]"),
+            "NormalDirection", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.6|Bound=1.2]"),
+            "NormalPitch", StringValue("ns3::NormalRandomVariable[Mean=0.0|Variance=0.0|Bound=0.0]"));
 
-        // Set initial position
-        gaussMobility->SetPosition(Vector(0.0, 50.0, 1.5));
+        // Set initial position between Site 0 and Site 1 (~150m from center)
+        // This increases chance of crossing site boundaries and triggering handovers
+        Ptr<ListPositionAllocator> gaussPosAlloc = CreateObject<ListPositionAllocator>();
+        gaussPosAlloc->Add(Vector(150.0, 0.0, 1.5));
+        gaussHelper.SetPositionAllocator(gaussPosAlloc);
 
-        // Replace mobility model on first UE
-        Ptr<Node> firstUe = ueNodesTemp.Get(0);
-        Ptr<MobilityModel> oldMobility = firstUe->GetObject<MobilityModel>();
-        if (oldMobility)
-        {
-            firstUe->AggregateObject(gaussMobility);
-            // Note: We can't remove old mobility, but the new one will be used
-            // when explicitly fetched by type
-        }
-        else
-        {
-            firstUe->AggregateObject(gaussMobility);
-        }
+        // Create scenario with custom mobility (no aggregation issues)
+        gridScenario.CreateScenarioWithCustomMobility(gaussHelper);
 
-        NS_LOG_INFO("Gauss-Markov mobility: alpha=" << gaussAlpha
+        NS_LOG_UNCOND("Gauss-Markov mobility: alpha=" << gaussAlpha
                     << " meanSpeed=" << ueSpeed << " m/s"
-                    << " variance=" << ueSpeedVariance);
+                    << " bounds=" << gaussBounds << "m");
     }
     else if (mobilityModel == "waypoint")
     {
