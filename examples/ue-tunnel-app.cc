@@ -329,12 +329,9 @@ UeTunnelApp::ReceiveFromInner(Ptr<NetDevice> device,
     // Log upstream packet capture (every 10th packet)
     static uint64_t upstreamCount = 0;
     upstreamCount++;
-    if (upstreamCount % 10 == 1 || m_handoverActive)
-    {
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] UPSTREAM #" << upstreamCount
-                      << " " << srcAddr << " -> " << dstAddr << " size=" << packet->GetSize()
-                      << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
-    }
+    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] UPSTREAM #" << upstreamCount
+                  << " " << srcAddr << " -> " << dstAddr << " size=" << packet->GetSize()
+                  << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
 
     // Tunnel this packet - send the complete IP packet
     SendToTunnel(packet);
@@ -367,13 +364,9 @@ UeTunnelApp::SendToTunnel(Ptr<const Packet> innerPacket)
     if (ret > 0)
     {
         m_txPackets++;
-        // Log every 10th packet or if handover is active
-        if (m_txPackets % 10 == 1 || m_handoverActive)
-        {
-            NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] TX #" << m_txPackets
-                          << " size=" << tunnelPacket->GetSize() << " -> " << m_edgeServerIp
-                          << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
-        }
+        NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] TX #" << m_txPackets
+                      << " size=" << tunnelPacket->GetSize() << " -> " << m_edgeServerIp
+                      << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
     }
     else
     {
@@ -404,13 +397,9 @@ UeTunnelApp::ReceiveFromTunnel(Ptr<Socket> socket)
             InetSocketAddress address = InetSocketAddress::ConvertFrom(from);
             m_rxPackets++;
 
-            // Log every 10th packet or if handover is active
-            if (m_rxPackets % 10 == 1 || m_handoverActive)
-            {
-                NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] RX #" << m_rxPackets
-                              << " size=" << packet->GetSize() << " from " << address.GetIpv4()
-                              << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
-            }
+            NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] RX #" << m_rxPackets
+                          << " size=" << packet->GetSize() << " from " << address.GetIpv4()
+                          << (m_handoverActive ? " [HANDOVER_ACTIVE]" : ""));
 
             // Extract Zenoh sequence number from payload pattern "[XXXX]" and record latency
             // Enable debug for first 20 packets to diagnose parsing
@@ -509,15 +498,12 @@ UeTunnelApp::ForwardToInner(Ptr<Packet> packet)
         }
     }
 
-    // Log forward to inner (every 10th packet)
+    // Log forward to inner
     static uint64_t forwardCount = 0;
     forwardCount++;
-    if (forwardCount % 10 == 1)
-    {
-        NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] FWD_TO_CLIENT #" << forwardCount
-                      << " " << srcAddr << " -> " << dstAddr << " size=" << packet->GetSize()
-                      << " dstMac=" << dstMac);
-    }
+    NS_LOG_DEBUG(Simulator::Now().GetSeconds() << "s [UE_TUNNEL] FWD_TO_CLIENT #" << forwardCount
+                  << " " << srcAddr << " -> " << dstAddr << " size=" << packet->GetSize()
+                  << " dstMac=" << dstMac);
 
     // Send to inner device (CSMA -> tap bridge -> external client)
     bool success = m_innerDevice->Send(packet, dstMac, 0x0800);  // IP protocol
