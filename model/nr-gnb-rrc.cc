@@ -2533,6 +2533,16 @@ NrGnbRrc::SendData(Ptr<Packet> packet)
     NrEpsBearerTag tag;
     bool found = packet->RemovePacketTag(tag);
     NS_ASSERT_MSG(found, "no NrEpsBearerTag found in packet to be sent");
+
+    // Check if UE still exists - it may have been removed during handover
+    // while packet was in transit
+    if (!HasUeManager(tag.GetRnti()))
+    {
+        NS_LOG_WARN("SendData: UE with RNTI " << tag.GetRnti()
+                    << " not found (likely removed during handover), dropping packet");
+        return false;
+    }
+
     Ptr<NrUeManager> ueManager = GetUeManager(tag.GetRnti());
 
     NS_LOG_INFO("Sending a packet of " << packet->GetSize() << " bytes to IMSI "
@@ -3043,8 +3053,13 @@ NrGnbRrc::DoAllocateTemporaryCellRnti(uint8_t componentCarrierId)
 void
 NrGnbRrc::DoRrcConfigurationUpdateInd(NrGnbCmacSapUser::UeConfig cmacParams)
 {
-    Ptr<NrUeManager> ueManager = GetUeManager(cmacParams.m_rnti);
-    ueManager->CmacUeConfigUpdateInd(cmacParams);
+    // Check if UE still exists - it may have been removed during handover
+    // while scheduler callback was pending
+    if (HasUeManager(cmacParams.m_rnti))
+    {
+        Ptr<NrUeManager> ueManager = GetUeManager(cmacParams.m_rnti);
+        ueManager->CmacUeConfigUpdateInd(cmacParams);
+    }
 }
 
 void

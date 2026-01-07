@@ -372,7 +372,13 @@ NrEpcGnbApplication::SendToNrSocket(Ptr<Packet> packet, uint16_t rnti, uint8_t b
         NS_ABORT_MSG("NrEpcGnbApplication::SendToNrSocket - Unknown IP type...");
     }
 
-    NS_ASSERT(sentBytes > 0);
+    if (sentBytes <= 0)
+    {
+        // This can happen during handover when UE context has been removed
+        // but packets are still arriving from SGW with old TEID mapping
+        NS_LOG_WARN("SendToNrSocket: Failed to send packet for RNTI " << rnti
+                    << " (likely UE removed during handover)");
+    }
 }
 
 void
