@@ -422,7 +422,7 @@ main(int argc, char* argv[])
     double slaThresholdMs = 50.0;            // SLA threshold in ms (remote driving: 50ms)
 
     // Output
-    std::string outputFile = "/tmp/baseline_latency.csv";
+    std::string latencyOutputPath = "/tmp/baseline_latency.csv";
     std::string simTag = "baseline";
     bool logging = false;
 
@@ -475,7 +475,7 @@ main(int argc, char* argv[])
     cmd.AddValue("slaThresholdMs", "SLA latency threshold in ms (violation if exceeded)", slaThresholdMs);
 
     // Output
-    cmd.AddValue("outputFile", "CSV output filename", outputFile);
+    cmd.AddValue("latencyOutputPath", "CSV output filename", latencyOutputPath);
     cmd.AddValue("simTag", "Simulation tag for output files", simTag);
     cmd.AddValue("logging", "Enable detailed logging", logging);
 
@@ -534,10 +534,10 @@ main(int argc, char* argv[])
     // Initialize CSV output
     //--------------------------------------------------------------------------
 
-    g_latencyCsv.open(outputFile);
+    g_latencyCsv.open(latencyOutputPath);
     if (!g_latencyCsv.is_open())
     {
-        NS_FATAL_ERROR("Cannot open CSV file: " << outputFile);
+        NS_FATAL_ERROR("Cannot open CSV file: " << latencyOutputPath);
     }
     g_latencyCsv << "timestamp_s,seq,latency_ms,size_bytes,cell_id,during_handover,buffering_delay_ms,sla_violation\n";
 
@@ -1156,7 +1156,7 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("No packets received!");
     }
 
-    NS_LOG_UNCOND("\nPer-packet results: " << outputFile);
+    NS_LOG_UNCOND("\nPer-packet results: " << latencyOutputPath);
 
     // FlowMonitor statistics
     monitor->CheckForLostPackets();
