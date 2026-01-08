@@ -81,6 +81,14 @@ NrNoOpComponentCarrierManager::DoTransmitBufferStatusReport(
     NrMacSapProvider::BufferStatusReportParameters params)
 {
     NS_LOG_FUNCTION(this);
+    // Guard against UE removed during handover
+    auto ueIt = m_ueInfo.find(params.rnti);
+    if (ueIt == m_ueInfo.end())
+    {
+        NS_LOG_WARN("DoTransmitBufferStatusReport: UE with RNTI " << params.rnti
+                    << " not found (likely removed during handover), dropping BSR");
+        return;
+    }
     auto ueManager = m_ccmRrcSapUser->GetUeManager(params.rnti);
     auto it = m_macSapProvidersMap.find(ueManager->GetComponentCarrierId());
     NS_ASSERT_MSG(it != m_macSapProvidersMap.end(), "could not find Sap for NrComponentCarrier ");
@@ -94,15 +102,38 @@ NrNoOpComponentCarrierManager::DoNotifyTxOpportunity(
     NS_LOG_FUNCTION(this);
     NS_LOG_DEBUG(this << " rnti= " << txOpParams.rnti << " lcid= " << +txOpParams.lcid << " layer= "
                       << +txOpParams.layer << " ccId=" << +txOpParams.componentCarrierId);
-    m_ueInfo.at(txOpParams.rnti).m_ueAttached.at(txOpParams.lcid)->NotifyTxOpportunity(txOpParams);
+    // Guard against UE removed during handover
+    auto ueIt = m_ueInfo.find(txOpParams.rnti);
+    if (ueIt == m_ueInfo.end())
+    {
+        NS_LOG_WARN("DoNotifyTxOpportunity: UE with RNTI " << txOpParams.rnti
+                    << " not found (likely removed during handover), ignoring");
+        return;
+    }
+    auto lcIt = ueIt->second.m_ueAttached.find(txOpParams.lcid);
+    if (lcIt == ueIt->second.m_ueAttached.end())
+    {
+        NS_LOG_WARN("DoNotifyTxOpportunity: LC " << +txOpParams.lcid << " for RNTI "
+                    << txOpParams.rnti << " not found, ignoring");
+        return;
+    }
+    lcIt->second->NotifyTxOpportunity(txOpParams);
 }
 
 void
 NrNoOpComponentCarrierManager::DoReceivePdu(NrMacSapUser::ReceivePduParameters rxPduParams)
 {
     NS_LOG_FUNCTION(this);
-    auto lcidIt = m_ueInfo.at(rxPduParams.rnti).m_ueAttached.find(rxPduParams.lcid);
-    if (lcidIt != m_ueInfo.at(rxPduParams.rnti).m_ueAttached.end())
+    // Guard against UE removed during handover
+    auto ueIt = m_ueInfo.find(rxPduParams.rnti);
+    if (ueIt == m_ueInfo.end())
+    {
+        NS_LOG_WARN("DoReceivePdu: UE with RNTI " << rxPduParams.rnti
+                    << " not found (likely removed during handover), dropping PDU");
+        return;
+    }
+    auto lcidIt = ueIt->second.m_ueAttached.find(rxPduParams.lcid);
+    if (lcidIt != ueIt->second.m_ueAttached.end())
     {
         lcidIt->second->ReceivePdu(rxPduParams);
     }
@@ -389,7 +420,16 @@ NrRrComponentCarrierManager::DoTransmitBufferStatusReport(
 {
     NS_LOG_FUNCTION(this);
 
-    uint32_t numberOfCarriersForUe = m_ueInfo.at(params.rnti).m_enabledComponentCarrier;
+    // Guard against UE removed during handover
+    auto ueIt = m_ueInfo.find(params.rnti);
+    if (ueIt == m_ueInfo.end())
+    {
+        NS_LOG_WARN("NrRrCCM::DoTransmitBufferStatusReport: UE with RNTI " << params.rnti
+                    << " not found (likely removed during handover), dropping BSR");
+        return;
+    }
+
+    uint32_t numberOfCarriersForUe = ueIt->second.m_enabledComponentCarrier;
     if (params.lcid == 0 || params.lcid == 1 || numberOfCarriersForUe == 1)
     {
         NS_LOG_INFO("Buffer status forwarded to the primary carrier.");
@@ -420,8 +460,17 @@ NrRrComponentCarrierManager::DoUlReceiveMacCe(nr::MacCeListElement_s bsr,
     NS_ASSERT_MSG(bsr.m_macCeType == nr::MacCeListElement_s::BSR,
                   "Received a Control Message not allowed " << bsr.m_macCeType);
 
+    // Guard against UE removed during handover
+    auto ueIt = m_ueInfo.find(bsr.m_rnti);
+    if (ueIt == m_ueInfo.end())
+    {
+        NS_LOG_WARN("NrRrCCM::DoUlReceiveMacCe: UE with RNTI " << bsr.m_rnti
+                    << " not found (likely removed during handover), dropping MAC CE");
+        return;
+    }
+
     // split traffic in uplink equally among carriers
-    uint32_t numberOfCarriersForUe = m_ueInfo.at(bsr.m_rnti).m_enabledComponentCarrier;
+    uint32_t numberOfCarriersForUe = ueIt->second.m_enabledComponentCarrier;
 
     if (bsr.m_macCeType == nr::MacCeListElement_s::BSR)
     {
@@ -468,8 +517,18 @@ void
 NrRrComponentCarrierManager::DoUlReceiveSr(uint16_t rnti, uint8_t /* componentCarrierId */)
 {
     NS_LOG_FUNCTION(this);
+
+    // Guard against UE removed during handover
+    auto ueIt = m_ueInfo.find(rnti);
+    if (ueIt == m_ueInfo.end())
+    {
+        NS_LOG_WARN("NrRrCCM::DoUlReceiveSr: UE with RNTI " << rnti
+                    << " not found (likely removed during handover), ignoring SR");
+        return;
+    }
+
     // split traffic in uplink equally among carriers
-    uint32_t numberOfCarriersForUe = m_ueInfo.at(rnti).m_enabledComponentCarrier;
+    uint32_t numberOfCarriersForUe = ueIt->second.m_enabledComponentCarrier;
 
     m_ccmMacSapProviderMap.find(m_lastCcIdForSr)->second->ReportSrToScheduler(rnti);
 

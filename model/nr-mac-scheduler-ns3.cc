@@ -2479,9 +2479,19 @@ NrMacSchedulerNs3::DoSchedDlTriggerReq(
         //    due to timings
         // 2) Duplicated feedbacks (same UE, same process ID). I don't know why
         //    these are generated.. but anyway..
+        // 3) Feedback for UEs that have been removed during handover
         for (auto it = dlHarqFeedback.begin(); it != dlHarqFeedback.end(); /* no inc */)
         {
-            auto& ueInfo = m_ueMap.find(it->m_rnti)->second;
+            // Guard against UE removed during handover
+            auto ueIt = m_ueMap.find(it->m_rnti);
+            if (ueIt == m_ueMap.end())
+            {
+                NS_LOG_WARN("DL HARQ feedback for UE " << it->m_rnti
+                            << " ignored because UE not found (likely removed during handover)");
+                it = dlHarqFeedback.erase(it); /* INC */
+                continue;
+            }
+            auto& ueInfo = ueIt->second;
             auto& process = ueInfo->m_dlHarq.Find(it->m_harqProcessId)->second;
             NS_LOG_INFO("Analyzing feedback for UE " << it->m_rnti << " process "
                                                      << static_cast<uint32_t>(it->m_harqProcessId));
@@ -2567,10 +2577,19 @@ NrMacSchedulerNs3::DoSchedUlTriggerReq(
                       " existing: " << existingSize << " received: " << inSize
                                     << " calculated: " << ulHarqFeedback.size());
 
-        // if there are feedbacks for expired process, remove them
+        // if there are feedbacks for expired process or removed UEs, remove them
         for (auto it = ulHarqFeedback.begin(); it != ulHarqFeedback.end(); /* no inc */)
         {
-            auto& ueInfo = m_ueMap.find(it->m_rnti)->second;
+            // Guard against UE removed during handover
+            auto ueIt = m_ueMap.find(it->m_rnti);
+            if (ueIt == m_ueMap.end())
+            {
+                NS_LOG_WARN("UL HARQ feedback for UE " << it->m_rnti
+                            << " ignored because UE not found (likely removed during handover)");
+                it = ulHarqFeedback.erase(it);
+                continue;
+            }
+            auto& ueInfo = ueIt->second;
             auto& process = ueInfo->m_ulHarq.Find(it->m_harqProcessId)->second;
             if (!process.m_active)
             {

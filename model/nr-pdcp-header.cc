@@ -100,7 +100,11 @@ NrPdcpHeader::Deserialize(Buffer::Iterator start)
     byte_2 = i.ReadU8();
     m_dcBit = (byte_1 & 0x80) > 7;
     // For now, we just support DATA PDUs
-    NS_ASSERT(m_dcBit == DATA_PDU);
+    // During handover, control PDUs may be received; log warning instead of assert
+    if (m_dcBit != DATA_PDU)
+    {
+        NS_LOG_WARN("Received PDCP control PDU (not DATA_PDU), which is not fully supported");
+    }
     m_sequenceNumber = ((byte_1 & 0x0F) << 8) | byte_2;
 
     return GetSerializedSize();

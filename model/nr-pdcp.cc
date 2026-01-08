@@ -208,6 +208,14 @@ NrPdcp::DoReceivePdu(Ptr<Packet> p)
     p->RemoveHeader(pdcpHeader);
     NS_LOG_LOGIC("PDCP header: " << pdcpHeader);
 
+    // Drop PDCP control PDUs (not supported, may arrive during handover)
+    if (pdcpHeader.GetDcBit() != NrPdcpHeader::DATA_PDU)
+    {
+        NS_LOG_WARN("Dropping PDCP control PDU (not DATA_PDU) for RNTI "
+                    << m_rnti << " LCID " << (uint32_t)m_lcid);
+        return;
+    }
+
     m_rxSequenceNumber = pdcpHeader.GetSequenceNumber() + 1;
     if (m_rxSequenceNumber > m_maxPdcpSn)
     {

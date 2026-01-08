@@ -2605,6 +2605,11 @@ void
 NrGnbRrc::HandoverJoiningTimeout(uint16_t rnti)
 {
     NS_LOG_FUNCTION(this << rnti);
+    // Check if UE still exists first - it may have been removed
+    if (!HasUeManager(rnti))
+    {
+        return;
+    }
     NS_ASSERT_MSG(GetUeManager(rnti)->GetState() == NrUeManager::HANDOVER_JOINING,
                   "HandoverJoiningTimeout in unexpected state "
                       << ToString(GetUeManager(rnti)->GetState()));
@@ -2612,27 +2617,28 @@ NrGnbRrc::HandoverJoiningTimeout(uint16_t rnti)
         GetUeManager(rnti)->GetImsi(),
         rnti,
         ComponentCarrierToCellId(GetUeManager(rnti)->GetComponentCarrierId()));
-    // check if the RNTI to be removed is not stale
-    if (HasUeManager(rnti))
-    {
-        /**
-         * When the handover joining timer expires at the target cell,
-         * then notify the source cell to release the RRC connection and
-         * delete the UE context at eNodeB and SGW/PGW. The
-         * HandoverPreparationFailure message is reused to notify the source cell
-         * through the X2 interface instead of creating a new message.
-         */
-        Ptr<NrUeManager> ueManager = GetUeManager(rnti);
-        NrEpcX2Sap::HandoverPreparationFailureParams msg = ueManager->BuildHoPrepFailMsg();
-        m_x2SapProvider->SendHandoverPreparationFailure(msg);
-        RemoveUe(rnti);
-    }
+    /**
+     * When the handover joining timer expires at the target cell,
+     * then notify the source cell to release the RRC connection and
+     * delete the UE context at eNodeB and SGW/PGW. The
+     * HandoverPreparationFailure message is reused to notify the source cell
+     * through the X2 interface instead of creating a new message.
+     */
+    Ptr<NrUeManager> ueManager = GetUeManager(rnti);
+    NrEpcX2Sap::HandoverPreparationFailureParams msg = ueManager->BuildHoPrepFailMsg();
+    m_x2SapProvider->SendHandoverPreparationFailure(msg);
+    RemoveUe(rnti);
 }
 
 void
 NrGnbRrc::HandoverLeavingTimeout(uint16_t rnti)
 {
     NS_LOG_FUNCTION(this << rnti);
+    // Check if UE still exists first - it may have been removed
+    if (!HasUeManager(rnti))
+    {
+        return;
+    }
     NS_ASSERT_MSG(GetUeManager(rnti)->GetState() == NrUeManager::HANDOVER_LEAVING,
                   "HandoverLeavingTimeout in unexpected state "
                       << ToString(GetUeManager(rnti)->GetState()));
@@ -2640,19 +2646,15 @@ NrGnbRrc::HandoverLeavingTimeout(uint16_t rnti)
         GetUeManager(rnti)->GetImsi(),
         rnti,
         ComponentCarrierToCellId(GetUeManager(rnti)->GetComponentCarrierId()));
-    // check if the RNTI to be removed is not stale
-    if (HasUeManager(rnti))
-    {
-        /**
-         * Send HO cancel msg to the target gNB and release the RRC connection
-         * with the UE and also delete UE context at the source gNB and bearer
-         * info at SGW and PGW.
-         */
-        Ptr<NrUeManager> ueManager = GetUeManager(rnti);
-        NrEpcX2Sap::HandoverCancelParams msg = ueManager->BuildHoCancelMsg();
-        m_x2SapProvider->SendHandoverCancel(msg);
-        ueManager->SendRrcConnectionRelease();
-    }
+    /**
+     * Send HO cancel msg to the target gNB and release the RRC connection
+     * with the UE and also delete UE context at the source gNB and bearer
+     * info at SGW and PGW.
+     */
+    Ptr<NrUeManager> ueManager = GetUeManager(rnti);
+    NrEpcX2Sap::HandoverCancelParams msg = ueManager->BuildHoCancelMsg();
+    m_x2SapProvider->SendHandoverCancel(msg);
+    ueManager->SendRrcConnectionRelease();
 }
 
 void
@@ -2694,7 +2696,10 @@ NrGnbRrc::DoRecvRrcConnectionReconfigurationCompleted(
     NrRrcSap::RrcConnectionReconfigurationCompleted msg)
 {
     NS_LOG_FUNCTION(this << rnti);
-    GetUeManager(rnti)->RecvRrcConnectionReconfigurationCompleted(msg);
+    if (HasUeManager(rnti))
+    {
+        GetUeManager(rnti)->RecvRrcConnectionReconfigurationCompleted(msg);
+    }
 }
 
 void
@@ -2703,7 +2708,10 @@ NrGnbRrc::DoRecvRrcConnectionReestablishmentRequest(
     NrRrcSap::RrcConnectionReestablishmentRequest msg)
 {
     NS_LOG_FUNCTION(this << rnti);
-    GetUeManager(rnti)->RecvRrcConnectionReestablishmentRequest(msg);
+    if (HasUeManager(rnti))
+    {
+        GetUeManager(rnti)->RecvRrcConnectionReestablishmentRequest(msg);
+    }
 }
 
 void
@@ -2712,22 +2720,31 @@ NrGnbRrc::DoRecvRrcConnectionReestablishmentComplete(
     NrRrcSap::RrcConnectionReestablishmentComplete msg)
 {
     NS_LOG_FUNCTION(this << rnti);
-    GetUeManager(rnti)->RecvRrcConnectionReestablishmentComplete(msg);
+    if (HasUeManager(rnti))
+    {
+        GetUeManager(rnti)->RecvRrcConnectionReestablishmentComplete(msg);
+    }
 }
 
 void
 NrGnbRrc::DoRecvMeasurementReport(uint16_t rnti, NrRrcSap::MeasurementReport msg)
 {
     NS_LOG_FUNCTION(this << rnti);
-    GetUeManager(rnti)->RecvMeasurementReport(msg);
+    if (HasUeManager(rnti))
+    {
+        GetUeManager(rnti)->RecvMeasurementReport(msg);
+    }
 }
 
 void
 NrGnbRrc::DoInitialContextSetupRequest(NrEpcGnbS1SapUser::InitialContextSetupRequestParameters msg)
 {
     NS_LOG_FUNCTION(this);
-    Ptr<NrUeManager> ueManager = GetUeManager(msg.rnti);
-    ueManager->InitialContextSetupRequest();
+    if (HasUeManager(msg.rnti))
+    {
+        Ptr<NrUeManager> ueManager = GetUeManager(msg.rnti);
+        ueManager->InitialContextSetupRequest();
+    }
 }
 
 void
@@ -2779,8 +2796,11 @@ NrGnbRrc::DoPathSwitchRequestAcknowledge(
     NrEpcGnbS1SapUser::PathSwitchRequestAcknowledgeParameters params)
 {
     NS_LOG_FUNCTION(this);
-    Ptr<NrUeManager> ueManager = GetUeManager(params.rnti);
-    ueManager->SendUeContextRelease();
+    if (HasUeManager(params.rnti))
+    {
+        Ptr<NrUeManager> ueManager = GetUeManager(params.rnti);
+        ueManager->SendUeContextRelease();
+    }
 }
 
 void
@@ -3007,11 +3027,20 @@ NrGnbRrc::DoRecvUeData(NrEpcX2SapUser::UeDataParams params)
     auto teidInfoIt = m_x2uTeidInfoMap.find(params.gtpTeid);
     if (teidInfoIt != m_x2uTeidInfoMap.end())
     {
-        GetUeManager(teidInfoIt->second.rnti)->SendData(teidInfoIt->second.drbid, params.ueData);
+        // Check if UE still exists - it may have been removed during handover
+        if (HasUeManager(teidInfoIt->second.rnti))
+        {
+            GetUeManager(teidInfoIt->second.rnti)->SendData(teidInfoIt->second.drbid, params.ueData);
+        }
+        else
+        {
+            NS_LOG_WARN("DoRecvUeData: UE with RNTI " << teidInfoIt->second.rnti
+                        << " not found, dropping X2-U forwarded packet");
+        }
     }
     else
     {
-        NS_FATAL_ERROR("X2-U data received but no X2uTeidInfo found");
+        NS_LOG_WARN("X2-U data received but no X2uTeidInfo found for TEID " << params.gtpTeid);
     }
 }
 
