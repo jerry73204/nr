@@ -757,22 +757,6 @@ main(int argc, char* argv[])
         capacityMbps = (bandwidth / 1e6) * 3.0;
     }
 
-    // If loadPercent specified, calculate numBackgroundUes
-    if (loadPercent > 0.0)
-    {
-        double targetLoadMbps = capacityMbps * (loadPercent / 100.0);
-        if (bgUeTrafficMbps > 0)
-        {
-            numBackgroundUes = static_cast<uint32_t>(std::ceil(targetLoadMbps / bgUeTrafficMbps));
-        }
-        double actualLoad = numBackgroundUes * bgUeTrafficMbps;
-        NS_LOG_UNCOND("\n--- Capacity Testing Mode ---");
-        NS_LOG_UNCOND("Estimated per-cell capacity: " << capacityMbps << " Mbps");
-        NS_LOG_UNCOND("Target load: " << loadPercent << "% = " << targetLoadMbps << " Mbps");
-        NS_LOG_UNCOND("Background UEs calculated: " << numBackgroundUes << " (each " << bgUeTrafficMbps << " Mbps)");
-        NS_LOG_UNCOND("Actual load: " << actualLoad << " Mbps (" << (actualLoad / capacityMbps * 100) << "%)");
-    }
-
     // Initialize handover prediction file system
     HandoverPredictionFile::GetInstance().Initialize(
         predictionFilePath,
@@ -968,7 +952,7 @@ main(int argc, char* argv[])
             }
             else if (builtinPath == "highway")
             {
-                double highwaySpeed = 20.0;
+                double highwaySpeed = 15.0;
                 double distance = std::sqrt(2) * 800.0;
                 double travelTime = distance / highwaySpeed;
 
@@ -1067,6 +1051,24 @@ main(int argc, char* argv[])
 
     NS_LOG_INFO("Created " << numSites << " sites with " << numCells << " cells");
     NS_LOG_INFO("Created " << ueNodes.GetN() << " UEs");
+
+    // Calculate numBackgroundUes based on total network capacity (per-cell load)
+    if (loadPercent > 0.0)
+    {
+        double totalNetworkCapacity = numCells * capacityMbps;
+        double targetTotalLoad = totalNetworkCapacity * (loadPercent / 100.0);
+        numBackgroundUes = static_cast<uint32_t>(
+            std::ceil(targetTotalLoad / bgUeTrafficMbps));
+
+        NS_LOG_UNCOND("\n--- Capacity Testing Mode ---");
+        NS_LOG_UNCOND("Per-cell capacity: " << capacityMbps << " Mbps");
+        NS_LOG_UNCOND("Total cells: " << numCells);
+        NS_LOG_UNCOND("Total network capacity: " << totalNetworkCapacity << " Mbps");
+        NS_LOG_UNCOND("Target per-cell load: " << loadPercent << "%");
+        NS_LOG_UNCOND("Total load needed: " << targetTotalLoad << " Mbps");
+        NS_LOG_UNCOND("Background UEs: " << numBackgroundUes
+                      << " (each " << bgUeTrafficMbps << " Mbps)");
+    }
 
     // Create background UE nodes for cell load
     NodeContainer backgroundUeNodes;
@@ -1909,9 +1911,14 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("  UEs: " << ueNodes.GetN());
     if (numBackgroundUes > 0)
     {
+        double totalBgTraffic = numBackgroundUes * bgUeTrafficMbps;
+        double totalNetworkCap = numCells * capacityMbps;
+        double perCellLoad = totalBgTraffic / numCells;
         NS_LOG_UNCOND("  Background UEs: " << numBackgroundUes);
-        NS_LOG_UNCOND("  Cell load: " << (numBackgroundUes * bgUeTrafficMbps) << " Mbps ("
-                      << (numBackgroundUes * bgUeTrafficMbps / capacityMbps * 100) << "% of capacity)");
+        NS_LOG_UNCOND("  Total bg traffic: " << totalBgTraffic << " Mbps ("
+                      << (totalBgTraffic / totalNetworkCap * 100) << "% of network)");
+        NS_LOG_UNCOND("  Per-cell load: " << perCellLoad << " Mbps ("
+                      << (perCellLoad / capacityMbps * 100) << "% of " << capacityMbps << " Mbps)");
     }
     NS_LOG_UNCOND("==============================================\n");
 
