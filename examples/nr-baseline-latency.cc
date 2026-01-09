@@ -411,6 +411,11 @@ main(int argc, char* argv[])
     double bgUeTrafficMbps = 5.0;            // Traffic rate per background UE in Mbps
     uint32_t bgUePacketSize = 1200;          // Background UE packet size in bytes
 
+    // Capacity testing parameters
+    double loadPercent = 0.0;                // Target load as % of capacity (0 = use numBackgroundUes directly)
+    double capacityMbps = 0.0;               // Per-cell capacity in Mbps (0 = auto-estimate based on bandwidth)
+    bool saturationTest = false;             // Run saturation test to find max capacity
+
     // Network delays
     double wanDelayMs = 20.0;                // WAN delay in ms (one-way, central cloud)
     double s1uDelayMs = 1.0;                 // S1-U link delay in ms
@@ -466,6 +471,11 @@ main(int argc, char* argv[])
     cmd.AddValue("bgUeTrafficMbps", "Traffic rate per background UE in Mbps", bgUeTrafficMbps);
     cmd.AddValue("bgUePacketSize", "Background UE packet size in bytes", bgUePacketSize);
 
+    // Capacity testing
+    cmd.AddValue("loadPercent", "Target load as % of capacity (0=use numBackgroundUes)", loadPercent);
+    cmd.AddValue("capacityMbps", "Per-cell capacity in Mbps (0=auto-estimate)", capacityMbps);
+    cmd.AddValue("saturationTest", "Run saturation test to find max capacity", saturationTest);
+
     // Network
     cmd.AddValue("wanDelayMs", "WAN delay in ms (one-way)", wanDelayMs);
     cmd.AddValue("s1uDelayMs", "S1-U link delay in ms", s1uDelayMs);
@@ -498,6 +508,62 @@ main(int argc, char* argv[])
     g_handoverInterruptMs = handoverInterruptMs;
     g_networkDelayMs = wanDelayMs + s1uDelayMs;  // Used to calculate packet arrival at gNB
     g_slaThresholdMs = slaThresholdMs;
+
+    //--------------------------------------------------------------------------
+    // Capacity testing: Calculate load from percentage if specified
+    //--------------------------------------------------------------------------
+
+    // Auto-estimate per-cell capacity based on bandwidth if not specified
+    // Rough estimates for NR with numerology 1 (30 kHz SCS):
+    //   5 MHz  -> ~15 Mbps per cell
+    //   10 MHz -> ~30 Mbps per cell
+    //   20 MHz -> ~60 Mbps per cell
+    //   50 MHz -> ~150 Mbps per cell
+    //   100 MHz -> ~300 Mbps per cell
+    if (capacityMbps <= 0.0)
+    {
+        // Estimate: ~3 Mbps per MHz (conservative for DL with overhead)
+        capacityMbps = (bandwidth / 1e6) * 3.0;
+    }
+
+    // If loadPercent is specified, calculate background traffic accordingly
+    if (loadPercent > 0.0)
+    {
+        double targetLoadMbps = capacityMbps * (loadPercent / 100.0);
+
+        // Calculate number of background UEs needed
+        // Each UE generates bgUeTrafficMbps of traffic
+        if (bgUeTrafficMbps > 0)
+        {
+            numBackgroundUes = static_cast<uint32_t>(std::ceil(targetLoadMbps / bgUeTrafficMbps));
+        }
+
+        NS_LOG_UNCOND("\n--- Capacity Testing Mode ---");
+        NS_LOG_UNCOND("Estimated per-cell capacity: " << capacityMbps << " Mbps");
+        NS_LOG_UNCOND("Target load: " << loadPercent << "% = " << targetLoadMbps << " Mbps");
+        NS_LOG_UNCOND("Background UEs calculated: " << numBackgroundUes
+                      << " (each " << bgUeTrafficMbps << " Mbps)");
+        NS_LOG_UNCOND("Actual load: " << (numBackgroundUes * bgUeTrafficMbps) << " Mbps ("
+                      << ((numBackgroundUes * bgUeTrafficMbps) / capacityMbps * 100.0) << "%)");
+    }
+
+    // Saturation test mode: progressively increase load
+    if (saturationTest)
+    {
+        NS_LOG_UNCOND("\n=== SATURATION TEST MODE ===");
+        NS_LOG_UNCOND("Estimated per-cell capacity: " << capacityMbps << " Mbps");
+        NS_LOG_UNCOND("Will test at 50%, 70%, 80%, 90%, 95%, 100%, 110% of capacity");
+        NS_LOG_UNCOND("Run with specific --loadPercent values to test each level");
+        NS_LOG_UNCOND("============================\n");
+
+        // For saturation test, default to 80% load if no loadPercent specified
+        if (loadPercent <= 0.0)
+        {
+            loadPercent = 80.0;
+            double targetLoadMbps = capacityMbps * (loadPercent / 100.0);
+            numBackgroundUes = static_cast<uint32_t>(std::ceil(targetLoadMbps / bgUeTrafficMbps));
+        }
+    }
 
     //--------------------------------------------------------------------------
     // Print configuration
