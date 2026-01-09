@@ -659,6 +659,16 @@ main(int argc, char* argv[])
     // Other
     bool logging = true;
 
+    // Background UE parameters for cell load
+    uint32_t numBackgroundUes = 0;           // Number of stationary background UEs (0 = disabled)
+    double bgUeTrafficMbps = 2.0;            // Traffic rate per background UE in Mbps
+    uint32_t bgUePacketSize = 1200;          // Background UE packet size in bytes
+
+    // Capacity testing parameters
+    double loadPercent = 0.0;                // Target load as % of capacity (0 = use numBackgroundUes directly)
+    double capacityMbps = 0.0;               // Per-cell capacity in Mbps (0 = auto-estimate)
+    bool saturationTest = false;             // Run saturation test to find max capacity
+
     CommandLine cmd(__FILE__);
 
     // Topology
@@ -716,11 +726,43 @@ main(int argc, char* argv[])
     // Other
     cmd.AddValue("logging", "Enable detailed logging", logging);
 
+    // Background UEs for cell load
+    cmd.AddValue("numBackgroundUes", "Number of stationary background UEs for cell load", numBackgroundUes);
+    cmd.AddValue("bgUeTrafficMbps", "Traffic rate per background UE in Mbps", bgUeTrafficMbps);
+    cmd.AddValue("bgUePacketSize", "Background UE packet size in bytes", bgUePacketSize);
+
+    // Capacity testing
+    cmd.AddValue("loadPercent", "Target load as % of capacity (0=use numBackgroundUes)", loadPercent);
+    cmd.AddValue("capacityMbps", "Per-cell capacity in Mbps (0=auto-estimate)", capacityMbps);
+    cmd.AddValue("saturationTest", "Run saturation test to find max capacity", saturationTest);
+
     cmd.Parse(argc, argv);
 
     // Update global handover interrupt parameters
     g_handoverInterruptMs = handoverInterruptMs;
     g_networkDelayMs = wanDelayMs;  // Used to calculate packet arrival at gNB
+
+    // Auto-estimate per-cell capacity from bandwidth (~3 Mbps per MHz)
+    if (capacityMbps <= 0.0)
+    {
+        capacityMbps = (bandwidth / 1e6) * 3.0;
+    }
+
+    // If loadPercent specified, calculate numBackgroundUes
+    if (loadPercent > 0.0)
+    {
+        double targetLoadMbps = capacityMbps * (loadPercent / 100.0);
+        if (bgUeTrafficMbps > 0)
+        {
+            numBackgroundUes = static_cast<uint32_t>(std::ceil(targetLoadMbps / bgUeTrafficMbps));
+        }
+        double actualLoad = numBackgroundUes * bgUeTrafficMbps;
+        NS_LOG_UNCOND("\n--- Capacity Testing Mode ---");
+        NS_LOG_UNCOND("Estimated per-cell capacity: " << capacityMbps << " Mbps");
+        NS_LOG_UNCOND("Target load: " << loadPercent << "% = " << targetLoadMbps << " Mbps");
+        NS_LOG_UNCOND("Background UEs calculated: " << numBackgroundUes << " (each " << bgUeTrafficMbps << " Mbps)");
+        NS_LOG_UNCOND("Actual load: " << actualLoad << " Mbps (" << (actualLoad / capacityMbps * 100) << "%)");
+    }
 
     // Initialize handover prediction file system
     HandoverPredictionFile::GetInstance().Initialize(
@@ -1017,6 +1059,51 @@ main(int argc, char* argv[])
     NS_LOG_INFO("Created " << numSites << " sites with " << numCells << " cells");
     NS_LOG_INFO("Created " << ueNodes.GetN() << " UEs");
 
+    // Create background UE nodes for cell load
+    NodeContainer backgroundUeNodes;
+    if (numBackgroundUes > 0)
+    {
+        backgroundUeNodes.Create(numBackgroundUes);
+
+        // Compute site positions (hexagonal pattern, same as gridScenario)
+        std::vector<Vector> sitePositions;
+        sitePositions.push_back(Vector(0, 0, 0));  // Center site
+        double siteRadius = isd;
+        for (uint32_t ring = 1; ring <= numRings; ring++)
+        {
+            for (uint32_t i = 0; i < 6 * ring; i++)
+            {
+                double siteAngle = M_PI / 6 + (2.0 * M_PI * i) / (6 * ring);
+                sitePositions.push_back(Vector(siteRadius * ring * cos(siteAngle),
+                                               siteRadius * ring * sin(siteAngle),
+                                               0));
+            }
+        }
+
+        // Position background UEs statically across cell sites
+        Ptr<ListPositionAllocator> bgPosAlloc = CreateObject<ListPositionAllocator>();
+        double ueOffset = 50.0;  // Distance from site center
+        for (uint32_t i = 0; i < numBackgroundUes; i++)
+        {
+            uint32_t siteIdx = i % sitePositions.size();
+            Vector sitePos = sitePositions[siteIdx];
+            // Place UEs around site center with angular offset
+            double offsetAngle = 2.0 * M_PI * (i / sitePositions.size()) / 3.0;
+            Vector pos(sitePos.x + ueOffset * cos(offsetAngle),
+                       sitePos.y + ueOffset * sin(offsetAngle),
+                       1.5);
+            bgPosAlloc->Add(pos);
+        }
+
+        MobilityHelper bgMobility;
+        bgMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+        bgMobility.SetPositionAllocator(bgPosAlloc);
+        bgMobility.Install(backgroundUeNodes);
+
+        NS_LOG_INFO("Created " << numBackgroundUes << " background UE(s) distributed across "
+                    << sitePositions.size() << " sites");
+    }
+
     // Special positioning for "linear" mode only
     // Other mobility models (gauss-markov, waypoint, random) handle their own positioning
     //
@@ -1091,6 +1178,20 @@ main(int argc, char* argv[])
     NetDeviceContainer gnbNetDevs = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
     NetDeviceContainer ueNetDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
 
+    // Install NR on background UEs
+    NetDeviceContainer bgUeNetDevs;
+    if (numBackgroundUes > 0)
+    {
+        bgUeNetDevs = nrHelper->InstallUeDevice(backgroundUeNodes, allBwps);
+
+        // Update config for background UE antenna
+        for (auto it = bgUeNetDevs.Begin(); it != bgUeNetDevs.End(); ++it)
+        {
+            DynamicCast<NrUeNetDevice>(*it)->UpdateConfig();
+        }
+        NS_LOG_INFO("Installed NR on " << bgUeNetDevs.GetN() << " background UEs");
+    }
+
     // Configure gNB TX power and numerology
     for (uint32_t i = 0; i < gnbNetDevs.GetN(); ++i)
     {
@@ -1131,6 +1232,26 @@ main(int argc, char* argv[])
         Ptr<Ipv4StaticRouting> ueStaticRouting =
             ipv4RoutingHelper.GetStaticRouting(ueNodes.Get(i)->GetObject<Ipv4>());
         ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
+    }
+
+    // Install IP stack on background UEs
+    Ipv4InterfaceContainer bgUeIpIfaces;
+    if (numBackgroundUes > 0)
+    {
+        internet.Install(backgroundUeNodes);
+        bgUeIpIfaces = epcHelper->AssignUeIpv4Address(bgUeNetDevs);
+
+        // Set default route for background UEs
+        for (uint32_t i = 0; i < backgroundUeNodes.GetN(); ++i)
+        {
+            Ptr<Ipv4StaticRouting> ueStaticRouting =
+                ipv4RoutingHelper.GetStaticRouting(backgroundUeNodes.Get(i)->GetObject<Ipv4>());
+            ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
+        }
+
+        // Attach background UEs to closest gNB
+        nrHelper->AttachToClosestGnb(bgUeNetDevs, gnbNetDevs);
+        NS_LOG_INFO("Background UEs attached to network");
     }
 
     //--------------------------------------------------------------------------
@@ -1601,6 +1722,45 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     nrHelper->AttachToClosestGnb(ueNetDevs, gnbNetDevs);
 
+    //--------------------------------------------------------------------------
+    // Install background DL traffic (PGW -> Background UEs)
+    //--------------------------------------------------------------------------
+    if (numBackgroundUes > 0)
+    {
+        Ptr<Node> pgwNode = epcHelper->GetPgwNode();
+        uint16_t bgDlPort = 3000;
+        double bgDataRateBps = bgUeTrafficMbps * 1e6;
+        uint32_t bgPacketSizeBits = bgUePacketSize * 8;
+        double bgIntervalSec = static_cast<double>(bgPacketSizeBits) / bgDataRateBps;
+
+        for (uint32_t i = 0; i < numBackgroundUes; i++)
+        {
+            // Sink on background UE
+            PacketSinkHelper bgSinkHelper("ns3::UdpSocketFactory",
+                InetSocketAddress(Ipv4Address::GetAny(), bgDlPort + i));
+            ApplicationContainer bgSinkApp = bgSinkHelper.Install(backgroundUeNodes.Get(i));
+            bgSinkApp.Start(Seconds(0.1));
+
+            // Source on PGW
+            OnOffHelper bgOnOffHelper("ns3::UdpSocketFactory",
+                InetSocketAddress(bgUeIpIfaces.GetAddress(i), bgDlPort + i));
+            bgOnOffHelper.SetAttribute("DataRate", DataRateValue(DataRate(static_cast<uint64_t>(bgDataRateBps))));
+            bgOnOffHelper.SetAttribute("PacketSize", UintegerValue(bgUePacketSize));
+            bgOnOffHelper.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]"));
+            bgOnOffHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+
+            ApplicationContainer bgSourceApp = bgOnOffHelper.Install(pgwNode);
+            // Stagger start times to avoid burst
+            bgSourceApp.Start(Seconds(0.5 + i * 0.1));
+        }
+
+        double totalBgTraffic = numBackgroundUes * bgUeTrafficMbps;
+        NS_LOG_UNCOND("\nBackground DL traffic installed:");
+        NS_LOG_UNCOND("  " << numBackgroundUes << " UEs x " << bgUeTrafficMbps << " Mbps = " << totalBgTraffic << " Mbps total");
+        NS_LOG_UNCOND("  Packet size: " << bgUePacketSize << " bytes, interval: " << (bgIntervalSec * 1000) << " ms");
+        NS_LOG_UNCOND("  Staggered start: 100ms apart");
+    }
+
     // Initialize serving cell tracking and update tunnel endpoint based on actual attachment
     for (uint32_t i = 0; i < ueNetDevs.GetN(); ++i)
     {
@@ -1739,6 +1899,12 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("  Edge Servers: " << numEdgeServers << " (one per site)");
     }
     NS_LOG_UNCOND("  UEs: " << ueNodes.GetN());
+    if (numBackgroundUes > 0)
+    {
+        NS_LOG_UNCOND("  Background UEs: " << numBackgroundUes);
+        NS_LOG_UNCOND("  Cell load: " << (numBackgroundUes * bgUeTrafficMbps) << " Mbps ("
+                      << (numBackgroundUes * bgUeTrafficMbps / capacityMbps * 100) << "% of capacity)");
+    }
     NS_LOG_UNCOND("==============================================\n");
 
     //--------------------------------------------------------------------------
