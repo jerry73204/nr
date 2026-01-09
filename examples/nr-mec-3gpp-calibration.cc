@@ -66,6 +66,7 @@
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <set>
 
 using namespace ns3;
 
@@ -166,10 +167,11 @@ CalculateRsrpTrend(const std::deque<MeasurementHistory>& history)
 /**
  * @brief Predict which cell will be the handover target based on RSRP trends
  * @param currentCellId The current serving cell
+ * @param currentNeighbors Set of neighbor cell IDs from the current measurement report
  * @return Predicted target cell ID (0 if no prediction)
  */
 uint16_t
-PredictHandoverTarget(uint16_t currentCellId)
+PredictHandoverTarget(uint16_t currentCellId, const std::set<uint16_t>& currentNeighbors)
 {
     auto servingIt = g_measurementHistory.find(currentCellId);
     if (servingIt == g_measurementHistory.end() || servingIt->second.empty())
@@ -179,22 +181,50 @@ PredictHandoverTarget(uint16_t currentCellId)
 
     int servingRsrp = servingIt->second.back().rsrp;
     const double hysteresis = 3.0;
+    const int rsrpFloor = -140;  // Minimum reportable RSRP
 
     uint16_t predictedTarget = 0;
     double bestScore = -999.0;
 
-    for (const auto& [cellId, history] : g_measurementHistory)
+    // Only consider neighbors that are in the current measurement report
+    for (uint16_t cellId : currentNeighbors)
     {
-        if (cellId == currentCellId || history.size() < 2)
+        auto histIt = g_measurementHistory.find(cellId);
+        if (histIt == g_measurementHistory.end() || histIt->second.size() < 2)
+        {
+            continue;
+        }
+        const auto& history = histIt->second;
+
+        int neighborRsrp = history.back().rsrp;
+
+        // Skip neighbors with floor RSRP (unreliable measurement)
+        if (neighborRsrp <= rsrpFloor)
         {
             continue;
         }
 
-        int neighborRsrp = history.back().rsrp;
+        // When serving is at floor, just pick strongest neighbor (ignore trend)
+        // because floor measurements are unreliable for trend calculation
+        if (servingRsrp <= rsrpFloor)
+        {
+            // Simply use the best RSRP when serving cell is at floor
+            if (neighborRsrp > bestScore)
+            {
+                bestScore = neighborRsrp;
+                predictedTarget = cellId;
+            }
+            continue;
+        }
+
+        // Normal case: use margin and trend for prediction
         double trend = CalculateRsrpTrend(history);
         double margin = neighborRsrp - servingRsrp - hysteresis;
 
-        if (margin > -10.0 && (trend > 0 || margin > 0))
+        // Predict handover when:
+        // 1. Neighbor is already stronger than serving (margin >= 0), OR
+        // 2. Neighbor is improving and close to threshold (margin > -6 and trend > 0)
+        if (margin >= 0 || (margin > -6.0 && trend > 0))
         {
             double score = margin + trend * 2.0;
             if (score > bestScore)
@@ -246,7 +276,8 @@ MeasurementReportCallback(std::string path,
         servingHistory.pop_front();
     }
 
-    // Process neighbor cell measurements
+    // Process neighbor cell measurements and collect current neighbor cell IDs
+    std::set<uint16_t> currentNeighbors;
     if (meas.measResults.haveMeasResultNeighCells)
     {
         for (const auto& neighbor : meas.measResults.measResultListEutra)
@@ -264,11 +295,14 @@ MeasurementReportCallback(std::string path,
             {
                 neighborHistory.pop_front();
             }
+
+            // Track current neighbors for prediction
+            currentNeighbors.insert(neighbor.physCellId);
         }
     }
 
-    // Run handover prediction
-    uint16_t predictedTarget = PredictHandoverTarget(cellId);
+    // Run handover prediction (only considers neighbors in current measurement report)
+    uint16_t predictedTarget = PredictHandoverTarget(cellId, currentNeighbors);
 
     Ipv4Address targetEdgeIp = Ipv4Address("0.0.0.0");
     double rsrpTrend = 0.0;
@@ -634,7 +668,7 @@ main(int argc, char* argv[])
     // NR parameters
     double centralFrequency = 3.5e9;             // 3.5 GHz (n78 band)
     double bandwidth = 20e6;                     // 20 MHz
-    double gnbTxPower = 43.0;                    // gNB TX power in dBm
+    double gnbTxPower = 50.0;                    // gNB TX power in dBm (increased for omnidirectional)
     uint16_t numerology = 1;                     // NR numerology
 
     // Tap bridge parameters
@@ -670,8 +704,8 @@ main(int argc, char* argv[])
 
     // Background UE parameters for cell load
     uint32_t numBackgroundUes = 0;           // Number of stationary background UEs (0 = disabled)
-    double bgUeTrafficMbps = 2.0;            // Traffic rate per background UE in Mbps
-    uint32_t bgUePacketSize = 1200;          // Background UE packet size in bytes
+    double bgUeTrafficMbps = 5.0;            // Traffic rate per background UE in Mbps
+    uint32_t bgUePacketSize = 500;          // Background UE packet size in bytes
 
     // Capacity testing parameters
     double loadPercent = 0.0;                // Target load as % of capacity (0 = use numBackgroundUes directly)
@@ -952,14 +986,22 @@ main(int argc, char* argv[])
             }
             else if (builtinPath == "highway")
             {
-                double highwaySpeed = 15.0;
-                double distance = std::sqrt(2) * 800.0;
+                // Highway path: Site 5 -> Site 0 -> Site 2 (along Y-axis)
+                // Ensures good coverage and predictable handovers
+                double highwaySpeed = 20.0;  // 72 km/h highway speed
+
+                // Start near Site 5 (0, -500), move to near Site 2 (0, 500)
+                // Total distance ~900m, passing through Site 0 (0, 0)
+                Vector start(0, -400, 1.5);   // 100m from Site 5
+                Vector end(0, 400, 1.5);      // 100m from Site 2
+                double distance = (end - start).GetLength();
                 double travelTime = distance / highwaySpeed;
 
-                waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(-400, -400, 1.5)));
-                waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(400, 400, 1.5)));
-                NS_LOG_INFO("Waypoint mobility: highway path (speed=" << highwaySpeed
-                            << " m/s, travel time=" << travelTime << "s)");
+                waypointMm->AddWaypoint(Waypoint(Seconds(0), start));
+                waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), end));
+                NS_LOG_INFO("Waypoint mobility: highway path Site5->Site0->Site2 (speed="
+                            << highwaySpeed << " m/s, distance=" << distance
+                            << "m, travel time=" << travelTime << "s)");
             }
             else if (builtinPath == "urban-grid")
             {
@@ -1170,9 +1212,9 @@ main(int argc, char* argv[])
     channelHelper->AssignChannelsToBands({band});
     allBwps = CcBwpCreator::GetAllBwps({band});
 
-    // Configure antennas (omnidirectional for single-sector deployment)
-    nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(1));
-    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(1));
+    // Configure antennas (omnidirectional with moderate array gain for single-sector)
+    nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(4));
+    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(4));
     nrHelper->SetGnbAntennaAttribute("AntennaElement",
                                      PointerValue(CreateObject<IsotropicAntennaModel>()));
 
@@ -1181,9 +1223,9 @@ main(int argc, char* argv[])
     nrHelper->SetUeAntennaAttribute("AntennaElement",
                                     PointerValue(CreateObject<IsotropicAntennaModel>()));
 
-    // Beamforming
+    // Beamforming - use DirectPath for omnidirectional antenna setup
     idealBeamformingHelper->SetAttribute("BeamformingMethod",
-                                         TypeIdValue(CellScanBeamforming::GetTypeId()));
+                                         TypeIdValue(DirectPathBeamforming::GetTypeId()));
 
     // Install NR devices
     NetDeviceContainer gnbNetDevs = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
