@@ -113,6 +113,9 @@ const size_t MAX_HISTORY_SIZE = 10;
 // Global reference to UE tunnel apps for dynamic endpoint switching
 std::map<uint64_t, Ptr<UeTunnelApp>> g_ueTunnelApps;
 
+// Main UE IMSI (to filter out background UE measurement reports)
+uint64_t g_mainUeImsi = 0;
+
 // Pointer to the scenario helper (for index mapping)
 NodeDistributionScenarioInterface* g_scenario = nullptr;
 
@@ -219,6 +222,12 @@ MeasurementReportCallback(std::string path,
                           uint16_t rnti,
                           NrRrcSap::MeasurementReport meas)
 {
+    // Skip measurement reports from background UEs to reduce computation
+    if (g_mainUeImsi != 0 && imsi != g_mainUeImsi)
+    {
+        return;
+    }
+
     NS_LOG_INFO(Simulator::Now().GetSeconds()
                 << "s [MEAS REPORT] IMSI=" << imsi << " RNTI=" << rnti
                 << " ServingCell=" << cellId);
@@ -1768,6 +1777,12 @@ main(int argc, char* argv[])
         uint64_t imsi = ueDev->GetImsi();
         uint16_t cellId = ueDev->GetCellId();
         g_ueCurrentServingCell[imsi] = cellId;
+
+        // Set main UE IMSI (first UE is the main one)
+        if (i == 0)
+        {
+            g_mainUeImsi = imsi;
+        }
 
         NS_LOG_UNCOND("UE " << i << " (IMSI=" << imsi << ") attached to cell " << cellId);
 
