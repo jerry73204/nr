@@ -1325,6 +1325,12 @@ main(int argc, char* argv[])
     idealBeamformingHelper->SetAttribute("BeamformingMethod",
                                          TypeIdValue(DirectPathBeamforming::GetTypeId()));
 
+    // Disable RLC retransmission for realistic handover interruption
+    // RLC_UM_ALWAYS: Unacknowledged Mode - packets are dropped if not delivered, no buffering
+    // This makes handover interruption visible as packet loss rather than hidden by retransmission
+    Config::SetDefault("ns3::NrGnbRrc::EpsBearerToRlcMapping",
+                       EnumValue(NrGnbRrc::RLC_UM_ALWAYS));
+
     // Install NR devices
     NetDeviceContainer gnbNetDevs = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
     NetDeviceContainer ueNetDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
