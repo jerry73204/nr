@@ -183,6 +183,13 @@ PredictHandoverTarget(uint16_t currentCellId, const std::set<uint16_t>& currentN
     const double hysteresis = 3.0;
     const int rsrpFloor = -140;  // Minimum reportable RSRP
 
+    // Calculate serving cell trend (negative = getting weaker = moving away)
+    double servingTrend = 0.0;
+    if (servingIt->second.size() >= 2)
+    {
+        servingTrend = CalculateRsrpTrend(servingIt->second);
+    }
+
     uint16_t predictedTarget = 0;
     double bestScore = -999.0;
 
@@ -217,16 +224,22 @@ PredictHandoverTarget(uint16_t currentCellId, const std::set<uint16_t>& currentN
             continue;
         }
 
-        // Normal case: use margin and trend for prediction
-        double trend = CalculateRsrpTrend(history);
+        // Normal case: use margin and trends for prediction
+        double neighborTrend = CalculateRsrpTrend(history);
         double margin = neighborRsrp - servingRsrp - hysteresis;
 
         // Predict handover when:
         // 1. Neighbor is already stronger than serving (margin >= 0), OR
-        // 2. Neighbor is improving and close to threshold (margin > -6 and trend > 0)
-        if (margin >= 0 || (margin > -6.0 && trend > 0))
+        // 2. Close to threshold AND (neighbor improving OR serving weakening)
+        bool marginClose = margin > -6.0;
+        bool neighborImproving = neighborTrend > 0.5;  // dB/s
+        bool servingWeakening = servingTrend < -0.5;   // dB/s
+
+        if (margin >= 0 || (marginClose && (neighborImproving || servingWeakening)))
         {
-            double score = margin + trend * 2.0;
+            // Score based on margin and relative trend (neighbor - serving)
+            double relativeTrend = neighborTrend - servingTrend;
+            double score = margin + relativeTrend * 2.0;
             if (score > bestScore)
             {
                 bestScore = score;
