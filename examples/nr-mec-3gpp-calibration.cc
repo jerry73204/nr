@@ -1331,6 +1331,10 @@ main(int argc, char* argv[])
     Config::SetDefault("ns3::NrGnbRrc::EpsBearerToRlcMapping",
                        EnumValue(NrGnbRrc::RLC_UM_ALWAYS));
 
+    // Increase RLC UM buffer size to prevent packet drops under load
+    // Default is 10KB which causes TAP bridge connections to fail when background traffic is present
+    Config::SetDefault("ns3::NrRlcUm::MaxTxBufferSize", UintegerValue(1024 * 1024));  // 1 MB
+
     // Install NR devices
     NetDeviceContainer gnbNetDevs = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
     NetDeviceContainer ueNetDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
