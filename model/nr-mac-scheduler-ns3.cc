@@ -1768,7 +1768,13 @@ NrMacSchedulerNs3::DoScheduleUlSr(PointInFTPlane* spoint, const std::list<uint16
 
     for (const auto& v : rntiList)
     {
-        for (auto& ulLcg : NrMacSchedulerUeInfo::GetUlLCG(m_ueMap.at(v)))
+        auto it = m_ueMap.find(v);
+        if (it == m_ueMap.end())
+        {
+            NS_LOG_WARN("SR for RNTI " << v << " ignored - UE not found (handover in progress?)");
+            continue;
+        }
+        for (auto& ulLcg : NrMacSchedulerUeInfo::GetUlLCG(it->second))
         {
             NS_LOG_DEBUG("Assigning 12 bytes to UE " << v << " because of a SR");
             ulLcg.second->UpdateInfo(12);
