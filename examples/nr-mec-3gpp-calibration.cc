@@ -717,7 +717,7 @@ main(int argc, char* argv[])
 
     // Background UE parameters for cell load
     uint32_t numBackgroundUes = 0;           // Number of stationary background UEs (0 = disabled)
-    double bgUeTrafficMbps = 5.0;            // Traffic rate per background UE in Mbps
+    double bgUeTrafficMbps = 20.0;            // Traffic rate per background UE in Mbps
     uint32_t bgUePacketSize = 500;          // Background UE packet size in bytes
     double bgTrafficStartDelay = 0.5;        // Delay before starting background traffic (seconds)
 
@@ -1295,9 +1295,16 @@ main(int argc, char* argv[])
     nrHelper->SetEpcHelper(epcHelper);
 
     // Configure handover algorithm
-    nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
-    nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(3.0));
-    nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(256)));
+    if( bandwidth == 5e6){
+        nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
+        nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(5.0));
+        nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(480)));
+    }
+    else{
+        nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
+        nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(3.0));
+        nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(256)));
+    }
 
     // Spectrum configuration (single band, overlapping)
     BandwidthPartInfoPtrVector allBwps;
