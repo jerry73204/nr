@@ -719,6 +719,7 @@ main(int argc, char* argv[])
     uint32_t numBackgroundUes = 0;           // Number of stationary background UEs (0 = disabled)
     double bgUeTrafficMbps = 5.0;            // Traffic rate per background UE in Mbps
     uint32_t bgUePacketSize = 500;          // Background UE packet size in bytes
+    double bgTrafficStartDelay = 0.5;        // Delay before starting background traffic (seconds)
 
     // Capacity testing parameters
     double loadPercent = 0.0;                // Target load as % of capacity (0 = use numBackgroundUes directly)
@@ -786,6 +787,7 @@ main(int argc, char* argv[])
     cmd.AddValue("numBackgroundUes", "Number of stationary background UEs for cell load", numBackgroundUes);
     cmd.AddValue("bgUeTrafficMbps", "Traffic rate per background UE in Mbps", bgUeTrafficMbps);
     cmd.AddValue("bgUePacketSize", "Background UE packet size in bytes", bgUePacketSize);
+    cmd.AddValue("bgTrafficStartDelay", "Delay before starting background traffic in seconds (allows TAP connections to establish)", bgTrafficStartDelay);
 
     // Capacity testing
     cmd.AddValue("loadPercent", "Target load as % of capacity (0=use numBackgroundUes)", loadPercent);
@@ -1904,15 +1906,16 @@ main(int argc, char* argv[])
             bgOnOffHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
 
             ApplicationContainer bgSourceApp = bgOnOffHelper.Install(pgwNode);
-            // Stagger start times to avoid burst
-            bgSourceApp.Start(Seconds(0.5 + i * 0.1));
+            // Stagger start times to avoid burst, with configurable delay
+            bgSourceApp.Start(Seconds(bgTrafficStartDelay + i * 0.1));
         }
 
         double totalBgTraffic = numBackgroundUes * bgUeTrafficMbps;
+        double lastStartTime = bgTrafficStartDelay + (numBackgroundUes - 1) * 0.1;
         NS_LOG_UNCOND("\nBackground DL traffic installed:");
         NS_LOG_UNCOND("  " << numBackgroundUes << " UEs x " << bgUeTrafficMbps << " Mbps = " << totalBgTraffic << " Mbps total");
         NS_LOG_UNCOND("  Packet size: " << bgUePacketSize << " bytes, interval: " << (bgIntervalSec * 1000) << " ms");
-        NS_LOG_UNCOND("  Staggered start: 100ms apart");
+        NS_LOG_UNCOND("  Start delay: " << bgTrafficStartDelay << "s, staggered 100ms apart (last starts at " << lastStartTime << "s)");
     }
 
     // Initialize serving cell tracking and update tunnel endpoint based on actual attachment
