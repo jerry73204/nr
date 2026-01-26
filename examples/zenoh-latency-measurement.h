@@ -819,7 +819,9 @@ public:
     uint64_t GetTotalPackets() const { return m_totalPackets; }
     uint64_t GetSlaViolations() const { return m_slaViolations; }
     double GetMaxLatency() const { return m_maxLatency; }
+    double GetMinLatency() const { return m_minLatency < 1e9 ? m_minLatency : 0; }
     double GetAvgLatency() const { return m_totalPackets > 0 ? m_sumLatency / m_totalPackets : 0; }
+    uint64_t GetPendingPackets() const { return m_pendingSends.size(); }
 
 private:
     ZenohLatencyTracker() = default;

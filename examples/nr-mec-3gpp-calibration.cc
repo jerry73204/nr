@@ -125,6 +125,26 @@ std::ofstream g_trajectoryFile;
 bool g_trajectoryLoggingEnabled = false;
 
 //==============================================================================
+// Handover Event Tracking (for result calculation)
+//==============================================================================
+
+struct HandoverEvent
+{
+    Time startTime;
+    Time endTime;
+    uint64_t imsi;
+    uint16_t sourceCell;
+    uint16_t targetCell;
+    uint16_t sourceSite;
+    uint16_t targetSite;
+    bool isInterSite;  // true if edge server switch occurred
+    bool success;      // true if handover completed successfully
+};
+
+std::vector<HandoverEvent> g_handoverEvents;
+std::string g_resultsOutputPath;  // Path for results summary file
+
+//==============================================================================
 // Handover Prediction Algorithm (Same as nr-mec-handover.cc)
 //==============================================================================
 
@@ -408,6 +428,19 @@ HandoverStartCallback(std::string path,
             g_cellIdToEdgeServerIp[sourceCellId] : Ipv4Address("0.0.0.0");
         NS_LOG_UNCOND("  Intra-site handover: edge server unchanged (Edge IP: " << edgeIp << ")");
     }
+
+    // Record handover event for statistics
+    HandoverEvent event;
+    event.startTime = now;
+    event.endTime = Time(0);  // Will be set when handover completes
+    event.imsi = imsi;
+    event.sourceCell = sourceCellId;
+    event.targetCell = targetCellId;
+    event.sourceSite = sourceSite;
+    event.targetSite = targetSite;
+    event.isInterSite = !isIntraSite;
+    event.success = false;  // Will be set to true if handover succeeds
+    g_handoverEvents.push_back(event);
 }
 
 /**
@@ -458,6 +491,18 @@ HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t
     {
         NS_LOG_UNCOND("  Intra-site handover: edge server unchanged");
     }
+
+    // Update handover event record - mark as successful and set end time
+    Time now = Simulator::Now();
+    for (auto it = g_handoverEvents.rbegin(); it != g_handoverEvents.rend(); ++it)
+    {
+        if (it->imsi == imsi && !it->success && it->targetCell == cellId)
+        {
+            it->endTime = now;
+            it->success = true;
+            break;
+        }
+    }
 }
 
 /**
@@ -468,6 +513,18 @@ HandoverEndErrorCallback(std::string path, uint64_t imsi, uint16_t cellId, uint1
 {
     NS_LOG_UNCOND(Simulator::Now().GetSeconds()
                   << "s [HANDOVER FAILED] IMSI=" << imsi << " CellId=" << cellId);
+
+    // Update handover event record - mark as failed and set end time
+    Time now = Simulator::Now();
+    for (auto it = g_handoverEvents.rbegin(); it != g_handoverEvents.rend(); ++it)
+    {
+        if (it->imsi == imsi && !it->success)
+        {
+            it->endTime = now;
+            // success remains false
+            break;
+        }
+    }
 }
 
 /**
@@ -654,6 +711,178 @@ LogUeTrajectory(NodeContainer ueNodes, double interval)
 }
 
 //==============================================================================
+// Results Calculation and Output
+//==============================================================================
+
+/**
+ * @brief Calculate and write simulation results to file
+ *
+ * Calculates:
+ * - Average latency, min/max latency
+ * - Packet loss rate (based on unmatched sent packets)
+ * - SLA violation rate
+ * - Handover statistics (count, duration, success rate)
+ *
+ * Output format matches experiment_data/mec_hex_XXX/latency.csv and traj.csv
+ */
+void
+WriteSimulationResults(const std::string& outputPath, double simTime, double slaThresholdMs)
+{
+    // Get latency statistics from ZenohLatencyTracker
+    auto& tracker = ZenohLatencyTracker::GetInstance();
+    uint64_t receivedPackets = tracker.GetTotalPackets();
+    uint64_t slaViolations = tracker.GetSlaViolations();
+    double avgLatency = tracker.GetAvgLatency();
+    double minLatency = tracker.GetMinLatency();
+    double maxLatency = tracker.GetMaxLatency();
+
+    // Calculate packet loss (pending packets at end of simulation are considered lost)
+    uint64_t lostPackets = tracker.GetPendingPackets();
+    uint64_t totalPacketsSent = receivedPackets + lostPackets;
+    double packetLossRate = totalPacketsSent > 0 ?
+        (100.0 * lostPackets / totalPacketsSent) : 0.0;
+
+    // Handover statistics
+    uint32_t totalHandovers = g_handoverEvents.size();
+    uint32_t successfulHandovers = 0;
+    uint32_t interSiteHandovers = 0;
+    uint32_t intraSiteHandovers = 0;
+    double totalHandoverDuration = 0.0;
+    double minHandoverDuration = 1e9;
+    double maxHandoverDuration = 0.0;
+
+    for (const auto& event : g_handoverEvents)
+    {
+        if (event.success)
+        {
+            successfulHandovers++;
+            double durationMs = (event.endTime - event.startTime).GetMilliSeconds();
+            totalHandoverDuration += durationMs;
+            if (durationMs < minHandoverDuration) minHandoverDuration = durationMs;
+            if (durationMs > maxHandoverDuration) maxHandoverDuration = durationMs;
+        }
+        if (event.isInterSite)
+        {
+            interSiteHandovers++;
+        }
+        else
+        {
+            intraSiteHandovers++;
+        }
+    }
+
+    double avgHandoverDuration = successfulHandovers > 0 ?
+        totalHandoverDuration / successfulHandovers : 0.0;
+    double handoverSuccessRate = totalHandovers > 0 ?
+        (100.0 * successfulHandovers / totalHandovers) : 100.0;
+    double slaViolationRate = receivedPackets > 0 ?
+        (100.0 * slaViolations / receivedPackets) : 0.0;
+
+    // Write results to file
+    std::ofstream resultsFile(outputPath);
+    if (!resultsFile.is_open())
+    {
+        NS_LOG_WARN("Failed to open results file: " << outputPath);
+        return;
+    }
+
+    resultsFile << "# Simulation Results Summary\n";
+    resultsFile << "# Generated at simulation end\n";
+    resultsFile << "\n";
+
+    // CSV format section for easy parsing
+    resultsFile << "[METRICS]\n";
+    resultsFile << "metric,value\n";
+    resultsFile << "simulation_time_s," << simTime << "\n";
+    resultsFile << "sla_threshold_ms," << slaThresholdMs << "\n";
+    resultsFile << "\n";
+
+    resultsFile << "[LATENCY]\n";
+    resultsFile << "metric,value\n";
+    resultsFile << "total_packets_sent," << totalPacketsSent << "\n";
+    resultsFile << "total_packets_received," << receivedPackets << "\n";
+    resultsFile << "packets_lost," << lostPackets << "\n";
+    resultsFile << "packet_loss_rate_percent," << std::fixed << std::setprecision(2) << packetLossRate << "\n";
+    resultsFile << "min_latency_ms," << std::fixed << std::setprecision(3) << minLatency << "\n";
+    resultsFile << "avg_latency_ms," << std::fixed << std::setprecision(3) << avgLatency << "\n";
+    resultsFile << "max_latency_ms," << std::fixed << std::setprecision(3) << maxLatency << "\n";
+    resultsFile << "sla_violations," << slaViolations << "\n";
+    resultsFile << "sla_violation_rate_percent," << std::fixed << std::setprecision(2) << slaViolationRate << "\n";
+    resultsFile << "\n";
+
+    resultsFile << "[HANDOVER]\n";
+    resultsFile << "metric,value\n";
+    resultsFile << "total_handovers," << totalHandovers << "\n";
+    resultsFile << "successful_handovers," << successfulHandovers << "\n";
+    resultsFile << "failed_handovers," << (totalHandovers - successfulHandovers) << "\n";
+    resultsFile << "handover_success_rate_percent," << std::fixed << std::setprecision(2) << handoverSuccessRate << "\n";
+    resultsFile << "inter_site_handovers," << interSiteHandovers << "\n";
+    resultsFile << "intra_site_handovers," << intraSiteHandovers << "\n";
+    if (successfulHandovers > 0)
+    {
+        resultsFile << "avg_handover_duration_ms," << std::fixed << std::setprecision(3) << avgHandoverDuration << "\n";
+        resultsFile << "min_handover_duration_ms," << std::fixed << std::setprecision(3) << minHandoverDuration << "\n";
+        resultsFile << "max_handover_duration_ms," << std::fixed << std::setprecision(3) << maxHandoverDuration << "\n";
+    }
+    resultsFile << "\n";
+
+    // Detailed handover events
+    resultsFile << "[HANDOVER_EVENTS]\n";
+    resultsFile << "start_time_s,end_time_s,duration_ms,imsi,source_cell,target_cell,source_site,target_site,is_inter_site,success\n";
+    for (const auto& event : g_handoverEvents)
+    {
+        double durationMs = event.success ?
+            (event.endTime - event.startTime).GetMilliSeconds() : -1.0;
+        resultsFile << std::fixed << std::setprecision(3)
+                    << event.startTime.GetSeconds() << ","
+                    << (event.success ? event.endTime.GetSeconds() : -1.0) << ","
+                    << durationMs << ","
+                    << event.imsi << ","
+                    << event.sourceCell << ","
+                    << event.targetCell << ","
+                    << event.sourceSite << ","
+                    << event.targetSite << ","
+                    << (event.isInterSite ? 1 : 0) << ","
+                    << (event.success ? 1 : 0) << "\n";
+    }
+
+    resultsFile.close();
+
+    // Print summary to console
+    NS_LOG_UNCOND("\n═══════════════════════════════════════════════════════════");
+    NS_LOG_UNCOND("  SIMULATION RESULTS SUMMARY");
+    NS_LOG_UNCOND("═══════════════════════════════════════════════════════════");
+    NS_LOG_UNCOND("  Simulation Time:     " << simTime << " s");
+    NS_LOG_UNCOND("  SLA Threshold:       " << slaThresholdMs << " ms");
+    NS_LOG_UNCOND("───────────────────────────────────────────────────────────");
+    NS_LOG_UNCOND("  PACKET METRICS:");
+    NS_LOG_UNCOND("    Packets Sent:      " << totalPacketsSent);
+    NS_LOG_UNCOND("    Packets Received:  " << receivedPackets);
+    NS_LOG_UNCOND("    Packets Lost:      " << lostPackets << " (" << std::fixed << std::setprecision(2) << packetLossRate << "%)");
+    NS_LOG_UNCOND("───────────────────────────────────────────────────────────");
+    NS_LOG_UNCOND("  LATENCY METRICS:");
+    NS_LOG_UNCOND("    Min Latency:       " << std::fixed << std::setprecision(3) << minLatency << " ms");
+    NS_LOG_UNCOND("    Average Latency:   " << std::fixed << std::setprecision(3) << avgLatency << " ms");
+    NS_LOG_UNCOND("    Max Latency:       " << std::fixed << std::setprecision(3) << maxLatency << " ms");
+    NS_LOG_UNCOND("    SLA Violations:    " << slaViolations << " (" << std::fixed << std::setprecision(2) << slaViolationRate << "%)");
+    NS_LOG_UNCOND("───────────────────────────────────────────────────────────");
+    NS_LOG_UNCOND("  HANDOVER METRICS:");
+    NS_LOG_UNCOND("    Total Handovers:   " << totalHandovers);
+    NS_LOG_UNCOND("    Successful:        " << successfulHandovers << " (" << std::fixed << std::setprecision(2) << handoverSuccessRate << "%)");
+    NS_LOG_UNCOND("    Inter-Site:        " << interSiteHandovers);
+    NS_LOG_UNCOND("    Intra-Site:        " << intraSiteHandovers);
+    if (successfulHandovers > 0)
+    {
+        NS_LOG_UNCOND("    Avg HO Duration:   " << std::fixed << std::setprecision(3) << avgHandoverDuration << " ms");
+        NS_LOG_UNCOND("    Min HO Duration:   " << std::fixed << std::setprecision(3) << minHandoverDuration << " ms");
+        NS_LOG_UNCOND("    Max HO Duration:   " << std::fixed << std::setprecision(3) << maxHandoverDuration << " ms");
+    }
+    NS_LOG_UNCOND("═══════════════════════════════════════════════════════════");
+    NS_LOG_UNCOND("  Results saved to:    " << outputPath);
+    NS_LOG_UNCOND("═══════════════════════════════════════════════════════════\n");
+}
+
+//==============================================================================
 // Main Function
 //==============================================================================
 
@@ -692,6 +921,9 @@ main(int argc, char* argv[])
     // Handover prediction
     std::string predictionFilePath = "/tmp/ns3_handover/ns3_handover";
     double predictionWriteIntervalMs = 100.0;
+
+    // Results output
+    std::string resultsOutputPath = "";          // Empty = disabled, path = enable results summary
 
     // Latency measurement
     std::string latencyOutputPath = "/tmp/zenoh_latency.csv";
@@ -769,6 +1001,9 @@ main(int argc, char* argv[])
     // Trajectory logging
     cmd.AddValue("trajectoryOutputPath", "Path for trajectory CSV file (empty=disabled)", trajectoryOutputPath);
     cmd.AddValue("trajectoryLogInterval", "Trajectory logging interval in seconds", trajectoryLogInterval);
+
+    // Results output
+    cmd.AddValue("resultsOutputPath", "Path for results summary file (empty=disabled)", resultsOutputPath);
 
     // Remote Host
     cmd.AddValue("enableRemoteHost", "Enable remote host (controller) node", enableRemoteHost);
@@ -2105,6 +2340,12 @@ main(int argc, char* argv[])
     {
         g_trajectoryFile.close();
         NS_LOG_UNCOND("Trajectory saved to: " << trajectoryOutputPath);
+    }
+
+    // Write simulation results summary
+    if (!resultsOutputPath.empty())
+    {
+        WriteSimulationResults(resultsOutputPath, simTime, slaThresholdMs);
     }
 
     Simulator::Destroy();
