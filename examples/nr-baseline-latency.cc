@@ -161,7 +161,7 @@ DlRxCallback(Ptr<const Packet> packet,
             // Buffering delay = time from arrival at gNB until handover completes
             // (packet waits at source gNB until handover is done, then forwarded)
             Time timeInBuffer = hoEnd - arrivalAtGnb;
-            bufferingDelayMs = timeInBuffer.GetMilliSeconds();
+            bufferingDelayMs = timeInBuffer.GetSeconds() * 1000.0;
         }
     }
 
@@ -172,7 +172,7 @@ DlRxCallback(Ptr<const Packet> packet,
     }
 
     // Total latency = base latency + buffering delay
-    double totalLatencyMs = baseLatency.GetMilliSeconds() + bufferingDelayMs;
+    double totalLatencyMs = baseLatency.GetSeconds() * 1000.0 + bufferingDelayMs;
 
     uint16_t cellId = g_ueServingCell.count(g_ueImsi) ? g_ueServingCell[g_ueImsi] : 0;
 
