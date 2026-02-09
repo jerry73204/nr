@@ -823,6 +823,23 @@ public:
     double GetAvgLatency() const { return m_totalPackets > 0 ? m_sumLatency / m_totalPackets : 0; }
     uint64_t GetPendingPackets() const { return m_pendingSends.size(); }
 
+    /**
+     * @brief Get details of lost packets (packets still pending at end of simulation)
+     * @return Vector of (sendTimeMs, sourceSn) pairs sorted by send time
+     */
+    std::vector<std::pair<double, uint32_t>> GetLostPacketDetails() const
+    {
+        std::vector<std::pair<double, uint32_t>> lostPackets;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (const auto& entry : m_pendingSends)
+        {
+            double sendTimeMs = entry.second.sendTimeNs / 1e6;
+            lostPackets.emplace_back(sendTimeMs, entry.second.sourceSn);
+        }
+        std::sort(lostPackets.begin(), lostPackets.end());
+        return lostPackets;
+    }
+
 private:
     ZenohLatencyTracker() = default;
     ~ZenohLatencyTracker() { Close(); }

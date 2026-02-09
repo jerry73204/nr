@@ -61,12 +61,15 @@
 #include "handover-prediction-file.h"
 #include "zenoh-latency-measurement.h"
 
+#include <cerrno>
 #include <cmath>
+#include <ctime>
 #include <deque>
 #include <fstream>
 #include <iomanip>
 #include <map>
 #include <set>
+#include <sys/stat.h>
 
 using namespace ns3;
 
@@ -846,6 +849,100 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
                     << (event.success ? 1 : 0) << "\n";
     }
 
+    // Get lost packet details for correlation with connected sites
+    auto lostPacketDetails = tracker.GetLostPacketDetails();
+
+    // Build site connection periods from handover events
+    struct SiteConnectionPeriod {
+        uint16_t siteId;
+        double startTimeMs;
+        double endTimeMs;
+        int packetsLost;
+    };
+    std::vector<SiteConnectionPeriod> connectionPeriods;
+
+    double simEndMs = simTime * 1000.0;
+
+    if (g_handoverEvents.empty())
+    {
+        // No handovers - single period for entire simulation (site unknown, use 0)
+        connectionPeriods.push_back({0, 0.0, simEndMs, 0});
+    }
+    else
+    {
+        // First period: simulation start to first handover
+        connectionPeriods.push_back({
+            g_handoverEvents[0].sourceSite,
+            0.0,
+            g_handoverEvents[0].startTime.GetMilliSeconds(),
+            0
+        });
+
+        // Intermediate periods: between handovers
+        for (size_t i = 0; i < g_handoverEvents.size(); ++i)
+        {
+            const auto& ho = g_handoverEvents[i];
+            double periodStart = ho.endTime.GetMilliSeconds();
+            double periodEnd = (i + 1 < g_handoverEvents.size())
+                ? g_handoverEvents[i + 1].startTime.GetMilliSeconds()
+                : simEndMs;
+
+            connectionPeriods.push_back({
+                ho.targetSite,
+                periodStart,
+                periodEnd,
+                0
+            });
+        }
+    }
+
+    // Classify each lost packet by connected site and store details
+    struct LostPacketInfo {
+        uint16_t siteId;
+        uint32_t sn;
+        double timestampMs;
+    };
+    std::vector<LostPacketInfo> lostPacketsBySite;
+
+    for (const auto& loss : lostPacketDetails)
+    {
+        double sendTimeMs = loss.first;
+        uint32_t sn = loss.second;
+        for (auto& period : connectionPeriods)
+        {
+            if (sendTimeMs >= period.startTimeMs && sendTimeMs < period.endTimeMs)
+            {
+                period.packetsLost++;
+                lostPacketsBySite.push_back({period.siteId, sn, sendTimeMs});
+                break;
+            }
+        }
+    }
+
+    // Output per-site connection periods with loss counts
+    resultsFile << "\n[SITE_CONNECTION]\n";
+    resultsFile << "site_id,connect_start_s,connect_end_s,packets_lost\n";
+    for (const auto& period : connectionPeriods)
+    {
+        resultsFile << period.siteId << ","
+                    << std::fixed << std::setprecision(3)
+                    << (period.startTimeMs / 1000.0) << ","
+                    << (period.endTimeMs / 1000.0) << ","
+                    << period.packetsLost << "\n";
+    }
+
+    // List each lost packet with site, sequence number, and timestamp
+    resultsFile << "\n[LOST_PACKETS]\n";
+    resultsFile << "site_id,sn,timestamp_ms\n";
+    for (const auto& pkt : lostPacketsBySite)
+    {
+        resultsFile << pkt.siteId << ","
+                    << pkt.sn << ","
+                    << std::fixed << std::setprecision(3)
+                    << pkt.timestampMs << "\n";
+    }
+    resultsFile << "total,," << lostPacketDetails.size() << "\n";
+
     resultsFile.close();
 
     // Print summary to console
@@ -880,6 +977,152 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
     NS_LOG_UNCOND("═══════════════════════════════════════════════════════════");
     NS_LOG_UNCOND("  Results saved to:    " << outputPath);
     NS_LOG_UNCOND("═══════════════════════════════════════════════════════════\n");
+}
+
+//==============================================================================
+// Experiment Directory Helpers
+//==============================================================================
+
+/**
+ * @brief Generate a timestamped experiment directory name
+ * @return Directory path in format "experiment_data/YYYY-MM-DD_HH-MM-SS"
+ */
+std::string
+GenerateExperimentDir()
+{
+    time_t now = time(nullptr);
+    struct tm* localTime = localtime(&now);
+    char buffer[64];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d_%H-%M-%S", localTime);
+    return "experiment_data/" + std::string(buffer);
+}
+
+/**
+ * @brief Create a directory if it doesn't exist
+ * @param path Directory path to create
+ * @return true if directory exists or was created successfully
+ */
+bool
+CreateDirectoryIfNeeded(const std::string& path)
+{
+    return mkdir(path.c_str(), 0755) == 0 || errno == EEXIST;
+}
+
+/**
+ * @brief Write experiment configuration to a file
+ * @param outputPath Path for the config file
+ * @param params Map of parameter names to values
+ */
+void
+WriteExperimentConfig(const std::string& outputPath,
+                      uint8_t numRings,
+                      const std::string& scenario,
+                      double isd,
+                      uint32_t numUes,
+                      double maxUeDistance,
+                      bool extendedCoverage,
+                      const std::string& mobilityModel,
+                      double ueSpeed,
+                      double ueSpeedVariance,
+                      double gaussAlpha,
+                      double gaussTimeStep,
+                      const std::string& waypointFile,
+                      const std::string& builtinPath,
+                      double simTime,
+                      double centralFrequency,
+                      double bandwidth,
+                      double gnbTxPower,
+                      uint16_t numerology,
+                      bool enableTap,
+                      const std::string& hoAlgorithmType,
+                      double hoHysteresis,
+                      double hoTimeToTriggerMs,
+                      double handoverInterruptMs,
+                      double wanDelayMs,
+                      double slaThresholdMs,
+                      uint16_t sourceEdgeNodeId,
+                      double trajectoryLogInterval,
+                      uint32_t numBackgroundUes,
+                      double bgUeTrafficMbps,
+                      uint32_t bgUePacketSize,
+                      double loadPercent,
+                      double capacityMbps)
+{
+    std::ofstream configFile(outputPath);
+    if (!configFile.is_open())
+    {
+        NS_LOG_WARN("Failed to open config file: " << outputPath);
+        return;
+    }
+
+    // Get current time for header
+    time_t now = time(nullptr);
+    char timeBuffer[64];
+    strftime(timeBuffer, sizeof(timeBuffer), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    configFile << "# Experiment Configuration\n";
+    configFile << "# Generated: " << timeBuffer << "\n\n";
+
+    // Use fixed-point format with appropriate precision for readability
+    configFile << std::fixed;
+
+    configFile << "[TOPOLOGY]\n";
+    configFile << "num_rings=" << (int)numRings << "\n";
+    configFile << "scenario=" << scenario << "\n";
+    configFile << std::setprecision(1) << "isd_m=" << isd << "\n";
+    configFile << "num_ues=" << numUes << "\n";
+    configFile << "max_ue_distance_m=" << maxUeDistance << "\n";
+    configFile << "extended_coverage=" << (extendedCoverage ? "true" : "false") << "\n";
+
+    configFile << "\n[MOBILITY]\n";
+    configFile << "mobility_model=" << mobilityModel << "\n";
+    configFile << std::setprecision(2);
+    configFile << "ue_speed_mps=" << ueSpeed << "\n";
+    configFile << "ue_speed_variance=" << ueSpeedVariance << "\n";
+    configFile << "gauss_alpha=" << gaussAlpha << "\n";
+    configFile << "gauss_time_step_s=" << gaussTimeStep << "\n";
+    if (!waypointFile.empty())
+    {
+        configFile << "waypoint_file=" << waypointFile << "\n";
+    }
+    configFile << "builtin_path=" << builtinPath << "\n";
+    configFile << std::setprecision(1) << "sim_time_s=" << simTime << "\n";
+
+    configFile << "\n[NR]\n";
+    configFile << std::setprecision(0);
+    configFile << "central_frequency_hz=" << centralFrequency << "\n";
+    configFile << "bandwidth_hz=" << bandwidth << "\n";
+    configFile << std::setprecision(1);
+    configFile << "gnb_tx_power_dbm=" << gnbTxPower << "\n";
+    configFile << "numerology=" << numerology << "\n";
+
+    configFile << "\n[HANDOVER_ALGORITHM]\n";
+    configFile << "algorithm_type=" << hoAlgorithmType << "\n";
+    configFile << "hysteresis_db=" << hoHysteresis << "\n";
+    configFile << "time_to_trigger_ms=" << hoTimeToTriggerMs << "\n";
+
+    configFile << "\n[HANDOVER]\n";
+    configFile << "handover_interrupt_ms=" << handoverInterruptMs << "\n";
+    configFile << "wan_delay_ms=" << wanDelayMs << "\n";
+
+    configFile << "\n[MEASUREMENT]\n";
+    configFile << "sla_threshold_ms=" << slaThresholdMs << "\n";
+    configFile << "source_edge_node_id=" << sourceEdgeNodeId << "\n";
+    configFile << std::setprecision(2) << "trajectory_log_interval_s=" << trajectoryLogInterval << "\n";
+
+    configFile << "\n[TAP_BRIDGE]\n";
+    configFile << "enable_tap=" << (enableTap ? "true" : "false") << "\n";
+
+    configFile << "\n[BACKGROUND_LOAD]\n";
+    configFile << "num_background_ues=" << numBackgroundUes << "\n";
+    configFile << std::setprecision(1);
+    configFile << "bg_ue_traffic_mbps=" << bgUeTrafficMbps << "\n";
+    configFile << "bg_ue_packet_size=" << bgUePacketSize << "\n";
+    configFile << "load_percent=" << loadPercent << "\n";
+    configFile << "capacity_mbps=" << capacityMbps << "\n";
+
+    configFile.close();
+    NS_LOG_INFO("Experiment config written to: " << outputPath);
 }
 
 //==============================================================================
@@ -922,17 +1165,18 @@ main(int argc, char* argv[])
     std::string predictionFilePath = "/tmp/ns3_handover/ns3_handover";
     double predictionWriteIntervalMs = 100.0;
 
-    // Results output
-    std::string resultsOutputPath = "";          // Empty = disabled, path = enable results summary
+    // Experiment output directory
+    std::string experimentDir = "";              // Empty = auto-generate timestamped directory
+
+    // Results output (set automatically if experimentDir is used)
+    std::string resultsOutputPath = "";          // Empty = use experimentDir, path = override
+    std::string latencyOutputPath = "";          // Empty = use experimentDir, path = override
+    std::string trajectoryOutputPath = "";       // Empty = use experimentDir, path = override
+    double trajectoryLogInterval = 0.5;          // Logging interval in seconds
 
     // Latency measurement
-    std::string latencyOutputPath = "/tmp/zenoh_latency.csv";
     double slaThresholdMs = 50.0;
     uint16_t sourceEdgeNodeId = 5;  // Edge node that publishes critical data
-
-    // Trajectory logging
-    std::string trajectoryOutputPath = "";       // Empty = disabled, path = enable CSV output
-    double trajectoryLogInterval = 0.5;          // Logging interval in seconds
 
     // Remote Host (traffic source / controller)
     bool enableRemoteHost = true;
@@ -943,6 +1187,11 @@ main(int argc, char* argv[])
 
     // Handover blackout model
     double handoverInterruptMs = 30.0;  // Handover interruption time (realistic: 30-100ms)
+
+    // Handover algorithm parameters (computed based on bandwidth, used for config output)
+    std::string hoAlgorithmType = "NrA3RsrpHandoverAlgorithm";
+    double hoHysteresis = 3.0;          // Will be updated based on bandwidth
+    double hoTimeToTriggerMs = 256.0;   // Will be updated based on bandwidth
 
     // Other
     bool logging = true;
@@ -993,17 +1242,18 @@ main(int argc, char* argv[])
     cmd.AddValue("predictionFilePath", "Path for handover prediction file", predictionFilePath);
     cmd.AddValue("predictionWriteIntervalMs", "Min interval between prediction writes (ms)", predictionWriteIntervalMs);
 
-    // Latency measurement
-    cmd.AddValue("latencyOutputPath", "Output path for latency CSV file", latencyOutputPath);
-    cmd.AddValue("slaThresholdMs", "SLA threshold in milliseconds", slaThresholdMs);
-    cmd.AddValue("sourceEdgeNodeId", "Edge node ID that publishes critical data", sourceEdgeNodeId);
+    // Experiment output directory
+    cmd.AddValue("experimentDir", "Experiment output directory (empty=auto-generate with timestamp)", experimentDir);
 
-    // Trajectory logging
-    cmd.AddValue("trajectoryOutputPath", "Path for trajectory CSV file (empty=disabled)", trajectoryOutputPath);
+    // Output paths (override experimentDir if specified)
+    cmd.AddValue("latencyOutputPath", "Override latency CSV path (default: experimentDir/latency.csv)", latencyOutputPath);
+    cmd.AddValue("trajectoryOutputPath", "Override trajectory CSV path (default: experimentDir/traj.csv)", trajectoryOutputPath);
+    cmd.AddValue("resultsOutputPath", "Override results summary path (default: experimentDir/result.csv)", resultsOutputPath);
     cmd.AddValue("trajectoryLogInterval", "Trajectory logging interval in seconds", trajectoryLogInterval);
 
-    // Results output
-    cmd.AddValue("resultsOutputPath", "Path for results summary file (empty=disabled)", resultsOutputPath);
+    // Latency measurement
+    cmd.AddValue("slaThresholdMs", "SLA threshold in milliseconds", slaThresholdMs);
+    cmd.AddValue("sourceEdgeNodeId", "Edge node ID that publishes critical data", sourceEdgeNodeId);
 
     // Remote Host
     cmd.AddValue("enableRemoteHost", "Enable remote host (controller) node", enableRemoteHost);
@@ -1040,6 +1290,87 @@ main(int argc, char* argv[])
     {
         capacityMbps = (bandwidth / 1e6) * 3.0;
     }
+
+    // Set handover algorithm parameters based on bandwidth (matches config at line ~1800)
+    if (bandwidth == 5e6)
+    {
+        hoHysteresis = 5.0;
+        hoTimeToTriggerMs = 480.0;
+    }
+    else
+    {
+        hoHysteresis = 3.0;
+        hoTimeToTriggerMs = 256.0;
+    }
+
+    //--------------------------------------------------------------------------
+    // Set up experiment output directory and paths
+    //--------------------------------------------------------------------------
+
+    // Generate experiment directory if not specified
+    if (experimentDir.empty())
+    {
+        experimentDir = GenerateExperimentDir();
+    }
+
+    // Create experiment directory (and parent if needed)
+    CreateDirectoryIfNeeded("experiment_data");
+    if (!CreateDirectoryIfNeeded(experimentDir))
+    {
+        NS_LOG_WARN("Failed to create experiment directory: " << experimentDir);
+    }
+
+    // Set output paths to use experiment directory (if not explicitly overridden)
+    std::string configOutputPath = experimentDir + "/config.txt";
+    if (latencyOutputPath.empty())
+    {
+        latencyOutputPath = experimentDir + "/latency.csv";
+    }
+    if (trajectoryOutputPath.empty())
+    {
+        trajectoryOutputPath = experimentDir + "/traj.csv";
+    }
+    if (resultsOutputPath.empty())
+    {
+        resultsOutputPath = experimentDir + "/result.csv";
+    }
+
+    // Write experiment configuration
+    WriteExperimentConfig(configOutputPath,
+                          numRings,
+                          scenario,
+                          isd,
+                          numUes,
+                          maxUeDistance,
+                          extendedCoverage,
+                          mobilityModel,
+                          ueSpeed,
+                          ueSpeedVariance,
+                          gaussAlpha,
+                          gaussTimeStep,
+                          waypointFile,
+                          builtinPath,
+                          simTime,
+                          centralFrequency,
+                          bandwidth,
+                          gnbTxPower,
+                          numerology,
+                          enableTap,
+                          hoAlgorithmType,
+                          hoHysteresis,
+                          hoTimeToTriggerMs,
+                          handoverInterruptMs,
+                          wanDelayMs,
+                          slaThresholdMs,
+                          sourceEdgeNodeId,
+                          trajectoryLogInterval,
+                          numBackgroundUes,
+                          bgUeTrafficMbps,
+                          bgUePacketSize,
+                          loadPercent,
+                          capacityMbps);
+
+    NS_LOG_UNCOND("Experiment directory: " << experimentDir);
 
     // Initialize handover prediction file system
     HandoverPredictionFile::GetInstance().Initialize(
@@ -1530,16 +1861,9 @@ main(int argc, char* argv[])
     nrHelper->SetEpcHelper(epcHelper);
 
     // Configure handover algorithm
-    if( bandwidth == 5e6){
-        nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
-        nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(5.0));
-        nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(480)));
-    }
-    else{
-        nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
-        nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(3.0));
-        nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(256)));
-    }
+    nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
+    nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(hoHysteresis));
+    nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(hoTimeToTriggerMs)));
 
     // Spectrum configuration (single band, overlapping)
     BandwidthPartInfoPtrVector allBwps;
@@ -2347,6 +2671,15 @@ main(int argc, char* argv[])
     {
         WriteSimulationResults(resultsOutputPath, simTime, slaThresholdMs);
     }
+
+    // Print experiment directory summary
+    NS_LOG_UNCOND("\n==============================================");
+    NS_LOG_UNCOND("Experiment Output Directory: " << experimentDir);
+    NS_LOG_UNCOND("  config.txt  - experiment configuration");
+    NS_LOG_UNCOND("  latency.csv - packet latency data");
+    NS_LOG_UNCOND("  traj.csv    - UE trajectory data");
+    NS_LOG_UNCOND("  result.csv  - simulation results summary");
+    NS_LOG_UNCOND("==============================================\n");
 
     Simulator::Destroy();
     return 0;
