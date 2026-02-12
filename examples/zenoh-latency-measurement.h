@@ -488,6 +488,26 @@ struct LatencyRecord
 };
 
 /**
+ * @brief Buffered CSV row for deferred file I/O
+ *
+ * Stores all fields needed to write one latency CSV row.
+ * Rows are accumulated in memory during simulation and flushed
+ * to disk in Close() to avoid blocking the real-time scheduler.
+ */
+struct CsvRow
+{
+    std::string sourceId;
+    uint32_t sourceSn;
+    int64_t sendTimeMs;
+    int64_t recvTimeMs;
+    double latencyMs;
+    uint16_t edgeNodeId;
+    bool slaViolation;
+    bool handoverActive;
+    std::string hopsStr;  // pre-formatted hop string (empty for non-hop API)
+};
+
+/**
  * @brief Singleton class to track Zenoh packet latencies
  *
  * Uses Source Info (source_id + source_sn) to track packets end-to-end,
@@ -512,13 +532,8 @@ public:
         m_initialized = true;
         m_debug = false;
 
-        m_csvFile.open(outputPath);
-        if (m_csvFile.is_open())
-        {
-            m_csvFile << "source_id,source_sn,send_time_ms,recv_time_ms,"
-                      << "latency_ms,edge_node_id,sla_violation,handover_active,hops\n";
-            m_csvFile.flush();
-        }
+        // CSV rows are buffered in memory and written in Close()
+        m_csvBuffer.clear();
 
         m_totalPackets = 0;
         m_slaViolations = 0;
@@ -609,18 +624,9 @@ public:
         if (latencyMs < m_minLatency) m_minLatency = latencyMs;
         if (slaViolation) m_slaViolations++;
 
-        if (m_csvFile.is_open())
-        {
-            m_csvFile << "\"" << sourceId << "\","
-                      << sourceSn << ","
-                      << (sendTimeNs / 1000000) << ","
-                      << (recvTimeNs / 1000000) << ","
-                      << latencyMs << ","
-                      << edgeNodeId << ","
-                      << (slaViolation ? 1 : 0) << ","
-                      << (handoverActive ? 1 : 0) << "\n";
-            m_csvFile.flush();
-        }
+        m_csvBuffer.push_back({sourceId, sourceSn,
+                               sendTimeNs / 1000000, recvTimeNs / 1000000,
+                               latencyMs, edgeNodeId, slaViolation, handoverActive, ""});
 
         if (m_debug)
         {
@@ -731,8 +737,7 @@ public:
         if (latencyMs < m_minLatency) m_minLatency = latencyMs;
         if (slaViolation) m_slaViolations++;
 
-        // Write to CSV - include hop details
-        if (m_csvFile.is_open())
+        // Buffer CSV row - include hop details
         {
             // Build hop string: "nodeId:ingress:egress;nodeId:ingress:egress;..."
             std::ostringstream hopStr;
@@ -745,16 +750,10 @@ public:
                        << (hop.egressTimeNs / 1000000);
             }
 
-            m_csvFile << "\"payload\","
-                      << zenohSn << ","
-                      << (sendTimeNs / 1000000) << ","
-                      << (recvTimeNs / 1000000) << ","
-                      << latencyMs << ","
-                      << edgeNodeId << ","
-                      << (slaViolation ? 1 : 0) << ","
-                      << (handoverActive ? 1 : 0) << ","
-                      << "\"" << hopStr.str() << "\"\n";
-            m_csvFile.flush();
+            m_csvBuffer.push_back({"payload", zenohSn,
+                                   sendTimeNs / 1000000, recvTimeNs / 1000000,
+                                   latencyMs, edgeNodeId, slaViolation, handoverActive,
+                                   hopStr.str()});
         }
 
         m_pendingSends.erase(it);
@@ -813,7 +812,32 @@ public:
 
     void Close()
     {
-        if (m_csvFile.is_open()) m_csvFile.close();
+        if (!m_initialized || m_outputPath.empty()) return;
+
+        std::ofstream csvFile(m_outputPath);
+        if (!csvFile.is_open()) return;
+
+        csvFile << "source_id,source_sn,send_time_ms,recv_time_ms,"
+                << "latency_ms,edge_node_id,sla_violation,handover_active,hops\n";
+
+        for (const auto& row : m_csvBuffer)
+        {
+            csvFile << "\"" << row.sourceId << "\","
+                    << row.sourceSn << ","
+                    << row.sendTimeMs << ","
+                    << row.recvTimeMs << ","
+                    << row.latencyMs << ","
+                    << row.edgeNodeId << ","
+                    << (row.slaViolation ? 1 : 0) << ","
+                    << (row.handoverActive ? 1 : 0);
+            if (!row.hopsStr.empty())
+            {
+                csvFile << ",\"" << row.hopsStr << "\"";
+            }
+            csvFile << "\n";
+        }
+
+        csvFile.close();
     }
 
     uint64_t GetTotalPackets() const { return m_totalPackets; }
@@ -876,7 +900,7 @@ private:
 
     std::map<std::string, SendRecord> m_pendingSends;
     mutable std::mutex m_mutex;
-    std::ofstream m_csvFile;
+    std::vector<CsvRow> m_csvBuffer;
 
     uint64_t m_totalPackets = 0;
     uint64_t m_slaViolations = 0;

@@ -69,7 +69,9 @@
 #include <iomanip>
 #include <map>
 #include <set>
+#include <sstream>
 #include <sys/stat.h>
+#include <vector>
 
 using namespace ns3;
 
@@ -123,8 +125,8 @@ uint64_t g_mainUeImsi = 0;
 // Pointer to the scenario helper (for index mapping)
 NodeDistributionScenarioInterface* g_scenario = nullptr;
 
-// Trajectory logging
-std::ofstream g_trajectoryFile;
+// Trajectory logging (buffered in memory, written at simulation end)
+std::vector<std::string> g_trajectoryBuffer;
 bool g_trajectoryLoggingEnabled = false;
 
 //==============================================================================
@@ -697,17 +699,16 @@ LogUeTrajectory(NodeContainer ueNodes, double interval)
         uint16_t servingCell = g_ueCurrentServingCell.count(imsi) ? g_ueCurrentServingCell[imsi] : 0;
         uint16_t siteId = g_cellIdToSiteId.count(servingCell) ? g_cellIdToSiteId[servingCell] : 0;
 
-        g_trajectoryFile << std::fixed << std::setprecision(3)
-                         << Simulator::Now().GetSeconds() << ","
-                         << imsi << ","
-                         << pos.x << "," << pos.y << "," << pos.z << ","
-                         << vel.x << "," << vel.y << "," << vel.z << ","
-                         << speed << ","
-                         << servingCell << "," << siteId << "\n";
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(3)
+            << Simulator::Now().GetSeconds() << ","
+            << imsi << ","
+            << pos.x << "," << pos.y << "," << pos.z << ","
+            << vel.x << "," << vel.y << "," << vel.z << ","
+            << speed << ","
+            << servingCell << "," << siteId;
+        g_trajectoryBuffer.push_back(oss.str());
     }
-
-    // Flush to ensure data is written even if simulation crashes
-    g_trajectoryFile.flush();
 
     // Schedule next logging
     Simulator::Schedule(Seconds(interval), &LogUeTrajectory, ueNodes, interval);
@@ -2593,23 +2594,14 @@ main(int argc, char* argv[])
     //--------------------------------------------------------------------------
     if (!trajectoryOutputPath.empty())
     {
-        g_trajectoryFile.open(trajectoryOutputPath);
-        if (g_trajectoryFile.is_open())
-        {
-            g_trajectoryLoggingEnabled = true;
-            // Write CSV header
-            g_trajectoryFile << "time_s,imsi,x,y,z,vx,vy,vz,speed,cell_id,site_id\n";
+        g_trajectoryLoggingEnabled = true;
+        g_trajectoryBuffer.clear();
 
-            // Schedule first logging
-            Simulator::Schedule(Seconds(trajectoryLogInterval), &LogUeTrajectory, ueNodes, trajectoryLogInterval);
+        // Schedule first logging (data buffered in memory, written at simulation end)
+        Simulator::Schedule(Seconds(trajectoryLogInterval), &LogUeTrajectory, ueNodes, trajectoryLogInterval);
 
-            NS_LOG_UNCOND("Trajectory logging enabled: " << trajectoryOutputPath
-                          << " (interval=" << trajectoryLogInterval << "s)");
-        }
-        else
-        {
-            NS_LOG_WARN("Failed to open trajectory file: " << trajectoryOutputPath);
-        }
+        NS_LOG_UNCOND("Trajectory logging enabled: " << trajectoryOutputPath
+                      << " (interval=" << trajectoryLogInterval << "s, buffered)");
     }
 
     //--------------------------------------------------------------------------
@@ -2659,11 +2651,25 @@ main(int argc, char* argv[])
     ZenohLatencyTracker::GetInstance().PrintSummary();
     ZenohLatencyTracker::GetInstance().Close();
 
-    // Close trajectory file
-    if (g_trajectoryLoggingEnabled && g_trajectoryFile.is_open())
+    // Write buffered trajectory data to file
+    if (g_trajectoryLoggingEnabled && !g_trajectoryBuffer.empty())
     {
-        g_trajectoryFile.close();
-        NS_LOG_UNCOND("Trajectory saved to: " << trajectoryOutputPath);
+        std::ofstream trajFile(trajectoryOutputPath);
+        if (trajFile.is_open())
+        {
+            trajFile << "time_s,imsi,x,y,z,vx,vy,vz,speed,cell_id,site_id\n";
+            for (const auto& row : g_trajectoryBuffer)
+            {
+                trajFile << row << "\n";
+            }
+            trajFile.close();
+            NS_LOG_UNCOND("Trajectory saved to: " << trajectoryOutputPath
+                          << " (" << g_trajectoryBuffer.size() << " records)");
+        }
+        else
+        {
+            NS_LOG_WARN("Failed to open trajectory file: " << trajectoryOutputPath);
+        }
     }
 
     // Write simulation results summary
