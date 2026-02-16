@@ -18,6 +18,48 @@ namespace ns3
 {
 
 /**
+ * Get the actual UE speed for a built-in path.
+ *
+ * Some paths (hexagonal, zigzag, highway, urban-grid, l-corner, u-corner) use
+ * their own hardcoded speed rather than the ueSpeed parameter. Call this before
+ * writing config files to record the correct speed.
+ *
+ * @param builtinPath  Name of the built-in path
+ * @param ueSpeed      The configured UE speed (returned as-is for paths that use it)
+ * @return The actual speed in m/s that the path will use
+ */
+inline double
+GetBuiltinPathSpeed(const std::string& builtinPath, double ueSpeed)
+{
+    if (builtinPath == "hexagonal")
+    {
+        return 12.0;
+    }
+    else if (builtinPath == "zigzag")
+    {
+        return 15.0;
+    }
+    else if (builtinPath == "highway")
+    {
+        return 20.0;
+    }
+    else if (builtinPath == "urban-grid")
+    {
+        return 10.0;
+    }
+    else if (builtinPath == "l-corner")
+    {
+        return 10.0;
+    }
+    else if (builtinPath == "u-corner")
+    {
+        return 8.0;
+    }
+    // linear-y, kaohsiung, and fallback use ueSpeed
+    return ueSpeed;
+}
+
+/**
  * Apply a built-in waypoint path to a WaypointMobilityModel.
  *
  * Available paths: hexagonal, linear-y, zigzag, highway, urban-grid, kaohsiung,

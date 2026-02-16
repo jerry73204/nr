@@ -1322,6 +1322,12 @@ main(int argc, char* argv[])
         NS_LOG_WARN("Failed to create experiment directory: " << experimentDir);
     }
 
+    // Resolve actual UE speed for built-in waypoint paths (some override ueSpeed)
+    if (mobilityModel == "waypoint")
+    {
+        ueSpeed = GetBuiltinPathSpeed(builtinPath, ueSpeed);
+    }
+
     // Set output paths to use experiment directory (if not explicitly overridden)
     std::string configOutputPath = experimentDir + "/config.txt";
     if (latencyOutputPath.empty())
