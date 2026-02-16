@@ -751,7 +751,7 @@ main(int argc, char* argv[])
     double gaussAlpha = 0.85;                // Gauss-Markov memory factor (0=random, 1=linear)
     double gaussTimeStep = 0.5;              // Gauss-Markov update interval (seconds)
     std::string waypointFile = "";           // NS-2 format trace file (empty = use built-in path)
-    std::string builtinPath = "linear-y";    // Built-in paths: hexagonal, linear-y, zigzag, highway, urban-grid
+    std::string builtinPath = "linear-y";    // Built-in paths: hexagonal, linear-y, zigzag, highway, urban-grid, kaohsiung, l-corner, u-corner
     double simTime = 60.0;                   // Simulation time in seconds
     std::string mobilityModel = "linear";    // linear, random, gauss-markov, waypoint
 
@@ -813,7 +813,7 @@ main(int argc, char* argv[])
     cmd.AddValue("gaussAlpha", "Gauss-Markov memory factor (0-1)", gaussAlpha);
     cmd.AddValue("gaussTimeStep", "Gauss-Markov update interval in seconds", gaussTimeStep);
     cmd.AddValue("waypointFile", "NS-2 format mobility trace file path", waypointFile);
-    cmd.AddValue("builtinPath", "Built-in path: hexagonal, linear-y, zigzag, highway, urban-grid", builtinPath);
+    cmd.AddValue("builtinPath", "Built-in path: hexagonal, linear-y, zigzag, highway, urban-grid, kaohsiung, l-corner, u-corner", builtinPath);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
     cmd.AddValue("mobilityModel", "Mobility model (linear, random, gauss-markov, waypoint)", mobilityModel);
 

@@ -20,7 +20,8 @@ namespace ns3
 /**
  * Apply a built-in waypoint path to a WaypointMobilityModel.
  *
- * Available paths: hexagonal, linear-y, zigzag, highway, urban-grid, kaohsiung.
+ * Available paths: hexagonal, linear-y, zigzag, highway, urban-grid, kaohsiung,
+ *                  l-corner, u-corner.
  * Falls back to linear-y if an unknown path name is given.
  *
  * @param builtinPath  Name of the built-in path to apply
@@ -218,6 +219,69 @@ ApplyBuiltinPath(const std::string& builtinPath,
         NS_LOG_INFO("Waypoint mobility: kaohsiung real-world path (speed=" << ueSpeed
                                                                            << " m/s, total time="
                                                                            << t << "s)");
+    }
+    else if (builtinPath == "l-corner")
+    {
+        // L-shaped path: travels north from Site 0 to the cell boundary with Site 2,
+        // makes a sharp L-turn east along the boundary, then continues into Site 1.
+        // Tests handover at a directional change on the cell edge.
+        //
+        // Voronoi boundary between Site 0 and Site 2 is at y=250.
+        // Triple-point where Sites 0,1,2 meet: (144.34, 250)
+        double lSpeed = 10.0; // m/s
+        double t = 0.0;
+
+        // Start at Site 0 center
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+
+        // Go north to boundary midpoint with Site 2 (250m)
+        t += 250.0 / lSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 250, 1.5)));
+
+        // L-turn: east along boundary to triple-point (144.34m)
+        t += 144.34 / lSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(144.34, 250, 1.5)));
+
+        // Continue east into Site 1 territory toward Site 1 center (288.66m)
+        t += 288.66 / lSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(433, 250, 1.5)));
+
+        NS_LOG_INFO("Waypoint mobility: l-corner path Site0->boundary->Site1 (total time="
+                    << t << "s)");
+    }
+    else if (builtinPath == "u-corner")
+    {
+        // U-shaped path: travels north from Site 0 toward the Site 2 boundary,
+        // crosses into Site 2 with a wide U-turn, then returns south into Site 0.
+        // The UE crosses the cell boundary twice and lingers near it during the turn,
+        // provoking handover ping-pong.
+        //
+        // Voronoi boundary between Site 0 and Site 2 is at y=250.
+        double uSpeed = 8.0; // m/s (slow to emphasize boundary dwell)
+        double t = 0.0;
+
+        // Start east of Site 0 center
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(100, 0, 1.5)));
+
+        // Travel north toward boundary (250m)
+        t += 250.0 / uSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(100, 250, 1.5)));
+
+        // Cross boundary into Site 2, curving left (U-turn apex)
+        double leg = std::sqrt(100.0 * 100.0 + 50.0 * 50.0); // ~111.8m
+        t += leg / uSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 300, 1.5)));
+
+        // Curve back south, crossing boundary again
+        t += leg / uSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-100, 250, 1.5)));
+
+        // Return south into Site 0
+        t += 250.0 / uSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-100, 0, 1.5)));
+
+        NS_LOG_INFO("Waypoint mobility: u-corner path with U-turn at Site0/Site2 boundary "
+                    "(total time=" << t << "s)");
     }
     else
     {
