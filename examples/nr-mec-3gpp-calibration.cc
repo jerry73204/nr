@@ -1615,16 +1615,24 @@ main(int argc, char* argv[])
         uint32_t notchedRbg = static_cast<uint32_t>(
             std::round(numRbg * std::min(loadPercent, 99.0) / 100.0));
 
-        // Build mask: true = available, false = notched (blocked)
-        // Spread notched RBGs evenly across the band to avoid conflicts with
-        // position-dependent resource allocation (e.g., TDMA RBG index 0 assignment)
+        // DL mask: distributed notching — spread evenly across the band.
+        // CP-OFDM (DL) supports non-contiguous allocation, so spreading avoids
+        // conflicts with TDMA scheduler's index-0-based RBG assignment.
         std::vector<bool> dlMask(numRbg, true);
-        std::vector<bool> ulMask(numRbg, true);
         for (uint32_t r = 0; r < notchedRbg; r++)
         {
             uint32_t idx = (r * numRbg) / notchedRbg;
             dlMask[idx] = false;
-            ulMask[idx] = false;
+        }
+
+        // UL mask: tail notching — block the highest-indexed RBGs, keeping
+        // the lower indices contiguous. DFT-s-OFDM (UL in FR1) requires
+        // contiguous RB allocation; a distributed mask would fragment the
+        // spectrum and collapse UL throughput artificially.
+        std::vector<bool> ulMask(numRbg, true);
+        for (uint32_t r = 0; r < notchedRbg; r++)
+        {
+            ulMask[numRbg - 1 - r] = false;
         }
 
         for (uint32_t i = 0; i < gnbNetDevs.GetN(); i++)
@@ -1638,7 +1646,10 @@ main(int argc, char* argv[])
         NS_LOG_UNCOND("\n--- RBG Notching (Cell Load Simulation) ---");
         NS_LOG_UNCOND("Load: " << loadPercent << "% -> notched " << notchedRbg
                       << " of " << numRbg << " RBGs per cell");
-        NS_LOG_UNCOND("Available RBGs per cell: " << (numRbg - notchedRbg));
+        NS_LOG_UNCOND("  DL: distributed (every ~" << (notchedRbg > 0 ? numRbg / notchedRbg : 0)
+                      << "th RBG, CP-OFDM)");
+        NS_LOG_UNCOND("  UL: tail-notched (RBGs " << (numRbg - notchedRbg)
+                      << "-" << (numRbg - 1) << " blocked, DFT-s-OFDM contiguous)");
     }
 
     //--------------------------------------------------------------------------
