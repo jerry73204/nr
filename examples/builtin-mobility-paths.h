@@ -69,11 +69,13 @@ GetBuiltinPathSpeed(const std::string& builtinPath, double ueSpeed)
  * @param builtinPath  Name of the built-in path to apply
  * @param waypointMm   The WaypointMobilityModel to add waypoints to
  * @param ueSpeed      UE speed in m/s (used by linear-y, kaohsiung, and fallback)
+ * @param startDelay   Seconds the UE stays stationary at start before moving (default 0)
  */
 inline void
 ApplyBuiltinPath(const std::string& builtinPath,
                  Ptr<WaypointMobilityModel> waypointMm,
-                 double ueSpeed)
+                 double ueSpeed,
+                 double startDelay = 0.0)
 {
     if (builtinPath == "hexagonal")
     {
@@ -88,6 +90,11 @@ ApplyBuiltinPath(const std::string& builtinPath,
 
         // Start at center (Site 0)
         waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+        if (startDelay > 0.0)
+        {
+            t = startDelay;
+            waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+        }
 
         // Go directly to Site 1 center (433, 250)
         t += 500.0 / hexSpeed;
@@ -125,8 +132,13 @@ ApplyBuiltinPath(const std::string& builtinPath,
         double totalDist = 450.0;
         double travelTime = totalDist / ueSpeed;
         waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
-        waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(0, 500, 1.5)));
-        NS_LOG_INFO("Waypoint mobility: linear-y path toward Site 2 (time=" << travelTime << "s)");
+        if (startDelay > 0.0)
+        {
+            waypointMm->AddWaypoint(Waypoint(Seconds(startDelay), Vector(0, 50, 1.5)));
+        }
+        waypointMm->AddWaypoint(Waypoint(Seconds(startDelay + travelTime), Vector(0, 500, 1.5)));
+        NS_LOG_INFO("Waypoint mobility: linear-y path toward Site 2 (startDelay="
+                    << startDelay << "s, travel time=" << travelTime << "s)");
     }
     else if (builtinPath == "zigzag")
     {
@@ -136,6 +148,11 @@ ApplyBuiltinPath(const std::string& builtinPath,
 
         // Start at center (Site 0)
         waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+        if (startDelay > 0.0)
+        {
+            t = startDelay;
+            waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+        }
 
         // Zig to Site 1 area (433, 250)
         t += 500.0 / zigzagSpeed;
@@ -170,10 +187,15 @@ ApplyBuiltinPath(const std::string& builtinPath,
         double travelTime = distance / highwaySpeed;
 
         waypointMm->AddWaypoint(Waypoint(Seconds(0), start));
-        waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), end));
+        if (startDelay > 0.0)
+        {
+            waypointMm->AddWaypoint(Waypoint(Seconds(startDelay), start));
+        }
+        waypointMm->AddWaypoint(Waypoint(Seconds(startDelay + travelTime), end));
         NS_LOG_INFO("Waypoint mobility: highway path Site5->Site0->Site2 (speed="
                     << highwaySpeed << " m/s, distance=" << distance
-                    << "m, travel time=" << travelTime << "s)");
+                    << "m, startDelay=" << startDelay
+                    << "s, travel time=" << travelTime << "s)");
     }
     else if (builtinPath == "urban-grid")
     {
@@ -184,6 +206,11 @@ ApplyBuiltinPath(const std::string& builtinPath,
 
         double t = 0.0;
         waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-200, -200, 1.5)));
+        if (startDelay > 0.0)
+        {
+            t = startDelay;
+            waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(-200, -200, 1.5)));
+        }
 
         t += blockTime;
         waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -200, 1.5)));
@@ -247,6 +274,12 @@ ApplyBuiltinPath(const std::string& builtinPath,
         double ueHeight = 1.5;
         waypointMm->AddWaypoint(
             Waypoint(Seconds(t), Vector(gpxPoints[0].x, gpxPoints[0].y, ueHeight)));
+        if (startDelay > 0.0)
+        {
+            t = startDelay;
+            waypointMm->AddWaypoint(
+                Waypoint(Seconds(t), Vector(gpxPoints[0].x, gpxPoints[0].y, ueHeight)));
+        }
 
         for (size_t i = 1; i < gpxPoints.size(); ++i)
         {
@@ -275,6 +308,11 @@ ApplyBuiltinPath(const std::string& builtinPath,
 
         // Start at Site 0 center
         waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+        if (startDelay > 0.0)
+        {
+            t = startDelay;
+            waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+        }
 
         // Go north to boundary midpoint with Site 2 (250m)
         t += 250.0 / lSpeed;
@@ -304,6 +342,11 @@ ApplyBuiltinPath(const std::string& builtinPath,
 
         // Start east of Site 0 center
         waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(100, 0, 1.5)));
+        if (startDelay > 0.0)
+        {
+            t = startDelay;
+            waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(100, 0, 1.5)));
+        }
 
         // Travel north toward boundary (250m)
         t += 250.0 / uSpeed;
@@ -331,7 +374,11 @@ ApplyBuiltinPath(const std::string& builtinPath,
         double totalDist = 450.0;
         double travelTime = totalDist / ueSpeed;
         waypointMm->AddWaypoint(Waypoint(Seconds(0), Vector(0, 50, 1.5)));
-        waypointMm->AddWaypoint(Waypoint(Seconds(travelTime), Vector(0, 500, 1.5)));
+        if (startDelay > 0.0)
+        {
+            waypointMm->AddWaypoint(Waypoint(Seconds(startDelay), Vector(0, 50, 1.5)));
+        }
+        waypointMm->AddWaypoint(Waypoint(Seconds(startDelay + travelTime), Vector(0, 500, 1.5)));
     }
 }
 
