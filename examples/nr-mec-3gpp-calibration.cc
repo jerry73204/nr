@@ -1354,6 +1354,10 @@ main(int argc, char* argv[])
     {
         GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
         GlobalValue::Bind("ChecksumEnabled", BooleanValue(true));
+        Config::SetDefault("ns3::RealtimeSimulatorImpl::SynchronizationMode",
+                           StringValue("HardLimit"));
+        Config::SetDefault("ns3::RealtimeSimulatorImpl::HardLimit",
+                           TimeValue(MilliSeconds(100)));
     }
 
     if (logging)
