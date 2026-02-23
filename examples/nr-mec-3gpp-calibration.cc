@@ -1255,6 +1255,20 @@ main(int argc, char* argv[])
 
     cmd.Parse(argc, argv);
 
+    // Configure real-time simulator when tap bridge is enabled
+    // IMPORTANT: Must be done immediately after cmd.Parse, before ANY ns-3 operation
+    // that could trigger lazy simulator instantiation.
+    if (enableTap)
+    {
+        GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
+        GlobalValue::Bind("ChecksumEnabled", BooleanValue(true));
+        Config::SetDefault("ns3::RealtimeSimulatorImpl::SynchronizationMode",
+                           StringValue("HardLimit"));
+        Config::SetDefault("ns3::RealtimeSimulatorImpl::HardLimit",
+                           TimeValue(MilliSeconds(100)));
+        NS_LOG_UNCOND("Real-time simulator enabled (HardLimit mode, 100ms limit)");
+    }
+
     // Update global handover interrupt parameters
     g_handoverInterruptMs = handoverInterruptMs;
     g_networkDelayMs = wanDelayMs;  // Used to calculate packet arrival at gNB
@@ -1353,17 +1367,6 @@ main(int argc, char* argv[])
         latencyOutputPath,
         slaThresholdMs,
         sourceEdgeNodeId);
-
-    // Configure real-time simulator when tap bridge is enabled
-    if (enableTap)
-    {
-        GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
-        GlobalValue::Bind("ChecksumEnabled", BooleanValue(true));
-        Config::SetDefault("ns3::RealtimeSimulatorImpl::SynchronizationMode",
-                           StringValue("HardLimit"));
-        Config::SetDefault("ns3::RealtimeSimulatorImpl::HardLimit",
-                           TimeValue(MilliSeconds(100)));
-    }
 
     if (logging)
     {
