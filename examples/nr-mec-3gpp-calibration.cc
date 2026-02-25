@@ -127,6 +127,18 @@ NodeDistributionScenarioInterface* g_scenario = nullptr;
 std::vector<std::string> g_trajectoryBuffer;
 bool g_trajectoryLoggingEnabled = false;
 
+// Measurement report logging (buffered in memory, written at simulation end)
+struct MeasurementRecord
+{
+    double timeS;
+    uint16_t cellId;
+    int rsrpDbm;
+    double rsrqDb;
+    bool isServing;
+};
+
+std::vector<MeasurementRecord> g_measurementReportBuffer;
+
 //==============================================================================
 // Handover Event Tracking (for result calculation)
 //==============================================================================
@@ -306,6 +318,10 @@ MeasurementReportCallback(std::string path,
         servingHistory.pop_front();
     }
 
+    // Buffer measurement for post-sim CSV export (raw cell IDs, mapped to site IDs at dump time)
+    g_measurementReportBuffer.push_back(
+        {Simulator::Now().GetSeconds(), cellId, servingRsrp, servingRsrq, true});
+
     // Process neighbor cell measurements and collect current neighbor cell IDs
     std::set<uint16_t> currentNeighbors;
     if (meas.measResults.haveMeasResultNeighCells)
@@ -325,6 +341,9 @@ MeasurementReportCallback(std::string path,
             {
                 neighborHistory.pop_front();
             }
+
+            g_measurementReportBuffer.push_back(
+                {Simulator::Now().GetSeconds(), neighbor.physCellId, neighborRsrp, neighborRsrq, false});
 
             // Track current neighbors for prediction
             currentNeighbors.insert(neighbor.physCellId);
@@ -1161,6 +1180,7 @@ main(int argc, char* argv[])
     std::string resultsOutputPath = "";          // Empty = use experimentDir, path = override
     std::string latencyOutputPath = "";          // Empty = use experimentDir, path = override
     std::string trajectoryOutputPath = "";       // Empty = use experimentDir, path = override
+    std::string measurementOutputPath = "";      // Empty = use experimentDir, path = override
     double trajectoryLogInterval = 0.5;          // Logging interval in seconds
 
     // Latency measurement
@@ -1231,6 +1251,7 @@ main(int argc, char* argv[])
     cmd.AddValue("latencyOutputPath", "Override latency CSV path (default: experimentDir/latency.csv)", latencyOutputPath);
     cmd.AddValue("trajectoryOutputPath", "Override trajectory CSV path (default: experimentDir/traj.csv)", trajectoryOutputPath);
     cmd.AddValue("resultsOutputPath", "Override results summary path (default: experimentDir/result.csv)", resultsOutputPath);
+    cmd.AddValue("measurementOutputPath", "Override measurement report CSV path (default: experimentDir/measurements.csv)", measurementOutputPath);
     cmd.AddValue("trajectoryLogInterval", "Trajectory logging interval in seconds", trajectoryLogInterval);
 
     // Latency measurement
@@ -1321,6 +1342,10 @@ main(int argc, char* argv[])
     if (resultsOutputPath.empty())
     {
         resultsOutputPath = experimentDir + "/result.csv";
+    }
+    if (measurementOutputPath.empty())
+    {
+        measurementOutputPath = experimentDir + "/measurements.csv";
     }
 
     // Write experiment configuration
@@ -2331,6 +2356,33 @@ main(int argc, char* argv[])
         }
     }
 
+    // Write buffered measurement report data to file
+    if (!g_measurementReportBuffer.empty())
+    {
+        std::ofstream measFile(measurementOutputPath);
+        if (measFile.is_open())
+        {
+            measFile << "time_s,site_id,rsrp_dbm,rsrq_db,is_serving\n";
+            for (const auto& rec : g_measurementReportBuffer)
+            {
+                uint16_t siteId = g_cellIdToSiteId.count(rec.cellId)
+                                      ? g_cellIdToSiteId[rec.cellId] : 0;
+                measFile << std::fixed << std::setprecision(6) << rec.timeS << ","
+                         << siteId << ","
+                         << rec.rsrpDbm << ","
+                         << std::setprecision(1) << rec.rsrqDb << ","
+                         << rec.isServing << "\n";
+            }
+            measFile.close();
+            NS_LOG_UNCOND("Measurements saved to: " << measurementOutputPath
+                          << " (" << g_measurementReportBuffer.size() << " records)");
+        }
+        else
+        {
+            NS_LOG_WARN("Failed to open measurement file: " << measurementOutputPath);
+        }
+    }
+
     // Write simulation results summary
     if (!resultsOutputPath.empty())
     {
@@ -2344,6 +2396,7 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("  latency.csv - packet latency data");
     NS_LOG_UNCOND("  traj.csv    - UE trajectory data");
     NS_LOG_UNCOND("  result.csv  - simulation results summary");
+    NS_LOG_UNCOND("  measurements.csv - RSRP/RSRQ measurement reports");
     NS_LOG_UNCOND("==============================================\n");
 
     Simulator::Destroy();
