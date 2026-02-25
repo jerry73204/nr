@@ -1575,7 +1575,7 @@ main(int argc, char* argv[])
 
     // Channel model
     Ptr<NrChannelHelper> channelHelper = CreateObject<NrChannelHelper>();
-    channelHelper->ConfigureFactories(scenario, "Default", "ThreeGpp");
+    channelHelper->ConfigureFactories(scenario, "LOS", "ThreeGpp");
     channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
     channelHelper->AssignChannelsToBands({band});
     allBwps = CcBwpCreator::GetAllBwps({band});
