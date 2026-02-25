@@ -297,36 +297,39 @@ ApplyBuiltinPath(const std::string& builtinPath,
     }
     else if (builtinPath == "l-corner")
     {
-        // L-shaped path: travels north from Site 0 to the cell boundary with Site 2,
-        // makes a sharp L-turn east along the boundary, then continues into Site 1.
-        // Tests handover at a directional change on the cell edge.
+        // L-shaped path v3: starts 100m south of Site 0 and travels north, first
+        // approaching Site 0 center (signal improving), then crossing the S0/S2
+        // boundary perpendicularly at y=250, continuing into Site 2 to (0,350),
+        // then making a sharp L-turn east, crossing the S2/S1 boundary at x~202.
         //
-        // Voronoi boundary between Site 0 and Site 2 is at y=250.
-        // Triple-point where Sites 0,1,2 meet: (144.34, 250)
+        // Starting south avoids packet loss that occurs when the UE moves away
+        // from its serving cell immediately — the approach phase keeps the serving
+        // cell signal stable while the system warms up.
+        //
+        // Voronoi boundaries (ISD=500m):
+        //   S0/S2: y = 250
+        //   S2/S1: y = 1.732*x  (passes through triple-point (144.34, 250))
         double lSpeed = 10.0; // m/s
         double t = 0.0;
 
-        // Start at Site 0 center
-        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+        // Start 100m south of Site 0 — UE approaches Site 0 first (signal improving)
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -100, 1.5)));
         if (startDelay > 0.0)
         {
             t = startDelay;
-            waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 0, 1.5)));
+            waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, -100, 1.5)));
         }
 
-        // Go north to boundary midpoint with Site 2 (250m)
-        t += 250.0 / lSpeed;
-        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 250, 1.5)));
+        // Go north 450m: approach Site 0 center, cross it, then cross S0/S2
+        // boundary at y=250, continue 100m into Site 2 to (0,350)
+        t += 450.0 / lSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(0, 350, 1.5)));
 
-        // L-turn: east along boundary to triple-point (144.34m)
-        t += 144.34 / lSpeed;
-        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(144.34, 250, 1.5)));
+        // L-turn: east 350m, crossing S2/S1 boundary at x~202, ending inside Site 1
+        t += 350.0 / lSpeed;
+        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(350, 350, 1.5)));
 
-        // Continue east into Site 1 territory toward Site 1 center (288.66m)
-        t += 288.66 / lSpeed;
-        waypointMm->AddWaypoint(Waypoint(Seconds(t), Vector(433, 250, 1.5)));
-
-        NS_LOG_INFO("Waypoint mobility: l-corner path Site0->boundary->Site1 (total time="
+        NS_LOG_INFO("Waypoint mobility: l-corner path Site0->Site2->Site1 (total time="
                     << t << "s)");
     }
     else if (builtinPath == "u-corner")
