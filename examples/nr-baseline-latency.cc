@@ -488,6 +488,7 @@ WriteExperimentConfig(const std::string& outputPath,
                       const std::string& waypointFile,
                       const std::string& builtinPath,
                       double simTime,
+                      double mobilityStartDelay,
                       double centralFrequency,
                       double bandwidth,
                       double gnbTxPower,
@@ -539,6 +540,7 @@ WriteExperimentConfig(const std::string& outputPath,
     }
     configFile << "builtin_path=" << builtinPath << "\n";
     configFile << std::setprecision(1) << "sim_time_s=" << simTime << "\n";
+    configFile << "mobility_start_delay_s=" << mobilityStartDelay << "\n";
 
     configFile << "\n[NR]\n";
     configFile << std::setprecision(0);
@@ -754,6 +756,7 @@ main(int argc, char* argv[])
     std::string builtinPath = "linear-y";    // Built-in paths: hexagonal, linear-y, zigzag, highway, urban-grid, kaohsiung, l-corner, u-corner
     double simTime = 60.0;                   // Simulation time in seconds
     std::string mobilityModel = "linear";    // linear, random, gauss-markov, waypoint
+    double mobilityStartDelay = 0.0;        // Delay before UE starts moving (seconds)
 
     // NR parameters
     double centralFrequency = 3.5e9;         // 3.5 GHz (n78 band)
@@ -816,6 +819,7 @@ main(int argc, char* argv[])
     cmd.AddValue("builtinPath", "Built-in path: hexagonal, linear-y, zigzag, highway, urban-grid, kaohsiung, l-corner, u-corner", builtinPath);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
     cmd.AddValue("mobilityModel", "Mobility model (linear, random, gauss-markov, waypoint)", mobilityModel);
+    cmd.AddValue("mobilityStartDelay", "Delay in seconds before UE starts moving", mobilityStartDelay);
 
     // NR
     cmd.AddValue("centralFrequency", "Central frequency in Hz", centralFrequency);
@@ -917,7 +921,7 @@ main(int argc, char* argv[])
                           numRings, scenario, isd,
                           mobilityModel, ueSpeed, ueSpeedVariance,
                           gaussAlpha, gaussTimeStep, waypointFile, builtinPath,
-                          simTime,
+                          simTime, mobilityStartDelay,
                           centralFrequency, bandwidth, gnbTxPower, numerology,
                           handoverInterruptMs, wanDelayMs, s1uDelayMs,
                           slaThresholdMs,
@@ -1125,7 +1129,7 @@ main(int argc, char* argv[])
                 NS_FATAL_ERROR("Failed to get WaypointMobilityModel from UE");
             }
 
-            ApplyBuiltinPath(builtinPath, waypointMm, ueSpeed);
+            ApplyBuiltinPath(builtinPath, waypointMm, ueSpeed, mobilityStartDelay);
         }
     }
     else if (mobilityModel == "random")
