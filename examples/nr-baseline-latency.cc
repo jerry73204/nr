@@ -761,7 +761,7 @@ main(int argc, char* argv[])
     // NR parameters
     double centralFrequency = 3.5e9;         // 3.5 GHz (n78 band)
     double bandwidth = 20e6;                 // 20 MHz
-    double gnbTxPower = 43.0;                // gNB TX power in dBm
+    double gnbTxPower = 50.0;                // gNB TX power in dBm
     uint16_t numerology = 1;                 // NR numerology
 
     // Traffic parameters (DL control commands only)
