@@ -799,6 +799,10 @@ main(int argc, char* argv[])
     std::string simTag = "baseline";
     bool logging = false;
 
+    // RNG parameters for reproducibility
+    uint32_t rngSeed = 1;                       // Global RNG seed
+    uint32_t rngRun = 1;                        // RNG run number (vary for independent replications)
+
     //--------------------------------------------------------------------------
     // Command line parsing
     //--------------------------------------------------------------------------
@@ -861,7 +865,15 @@ main(int argc, char* argv[])
     cmd.AddValue("simTag", "Simulation tag for output files", simTag);
     cmd.AddValue("logging", "Enable detailed logging", logging);
 
+    // RNG
+    cmd.AddValue("rngSeed", "Global RNG seed (for reproducibility)", rngSeed);
+    cmd.AddValue("rngRun", "RNG run number (vary for independent replications)", rngRun);
+
     cmd.Parse(argc, argv);
+
+    // Set RNG seed and run before any object creation
+    RngSeedManager::SetSeed(rngSeed);
+    RngSeedManager::SetRun(rngRun);
 
     //--------------------------------------------------------------------------
     // Enable logging if requested

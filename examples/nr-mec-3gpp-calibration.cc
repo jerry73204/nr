@@ -1208,6 +1208,10 @@ main(int argc, char* argv[])
     // Cell load simulation via RBG notching (lightweight, no background UEs needed)
     double loadPercent = 0.0;                // Target load as % of bandwidth (0 = no notching)
 
+    // RNG parameters for reproducibility
+    uint32_t rngSeed = 1;                       // Global RNG seed
+    uint32_t rngRun = 1;                        // RNG run number (vary for independent replications)
+
     CommandLine cmd(__FILE__);
 
     // Topology
@@ -1274,7 +1278,15 @@ main(int argc, char* argv[])
     // Cell load (RBG notching)
     cmd.AddValue("loadPercent", "Simulated cell load as % of bandwidth via RBG notching (0=no load)", loadPercent);
 
+    // RNG
+    cmd.AddValue("rngSeed", "Global RNG seed (for reproducibility)", rngSeed);
+    cmd.AddValue("rngRun", "RNG run number (vary for independent replications)", rngRun);
+
     cmd.Parse(argc, argv);
+
+    // Set RNG seed and run before any object creation
+    RngSeedManager::SetSeed(rngSeed);
+    RngSeedManager::SetRun(rngRun);
 
     // Configure real-time simulator when tap bridge is enabled
     // IMPORTANT: Must be done immediately after cmd.Parse, before ANY ns-3 operation
