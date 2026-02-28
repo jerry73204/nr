@@ -1181,7 +1181,7 @@ main(int argc, char* argv[])
     std::string latencyOutputPath = "";          // Empty = use experimentDir, path = override
     std::string trajectoryOutputPath = "";       // Empty = use experimentDir, path = override
     std::string measurementOutputPath = "";      // Empty = use experimentDir, path = override
-    double trajectoryLogInterval = 0.5;          // Logging interval in seconds
+    double trajectoryLogInterval = 1;          // Logging interval in seconds
 
     // Latency measurement
     double slaThresholdMs = 50.0;
