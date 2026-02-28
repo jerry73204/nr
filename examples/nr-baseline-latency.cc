@@ -500,11 +500,7 @@ WriteExperimentConfig(const std::string& outputPath,
                       uint32_t packetSize,
                       double intervalMs,
                       double trajectoryLogInterval,
-                      uint32_t numBackgroundUes,
-                      double bgUeTrafficMbps,
-                      uint32_t bgUePacketSize,
-                      double loadPercent,
-                      double capacityMbps)
+                      double loadPercent)
 {
     std::ofstream configFile(outputPath);
     if (!configFile.is_open())
@@ -563,13 +559,10 @@ WriteExperimentConfig(const std::string& outputPath,
     configFile << "sla_threshold_ms=" << slaThresholdMs << "\n";
     configFile << std::setprecision(2) << "trajectory_log_interval_s=" << trajectoryLogInterval << "\n";
 
-    configFile << "\n[BACKGROUND_LOAD]\n";
-    configFile << "num_background_ues=" << numBackgroundUes << "\n";
+    configFile << "\n[CELL_LOAD]\n";
     configFile << std::setprecision(1);
-    configFile << "bg_ue_traffic_mbps=" << bgUeTrafficMbps << "\n";
-    configFile << "bg_ue_packet_size=" << bgUePacketSize << "\n";
     configFile << "load_percent=" << loadPercent << "\n";
-    configFile << "capacity_mbps=" << capacityMbps << "\n";
+    configFile << "method=rbg_notching\n";
 
     configFile.close();
     NS_LOG_INFO("Experiment config written to: " << outputPath);
@@ -768,15 +761,8 @@ main(int argc, char* argv[])
     uint32_t packetSize = 100;               // Control packet size in bytes
     double intervalMs = 50.0;                // Packet interval in ms (20 Hz)
 
-    // Background UE parameters for cell load
-    uint32_t numBackgroundUes = 0;           // Number of stationary background UEs (0 = disabled)
-    double bgUeTrafficMbps = 5.0;            // Traffic rate per background UE in Mbps
-    uint32_t bgUePacketSize = 500;           // Background UE packet size in bytes
-
-    // Capacity testing parameters
-    double loadPercent = 0.0;                // Target load as % of capacity (0 = use numBackgroundUes directly)
-    double capacityMbps = 0.0;               // Per-cell capacity in Mbps (0 = auto-estimate based on bandwidth)
-    bool saturationTest = false;             // Run saturation test to find max capacity
+    // Cell load simulation via RBG notching (lightweight, no background UEs needed)
+    double loadPercent = 0.0;                // Target load as % of bandwidth (0 = no notching)
 
     // Network delays
     double wanDelayMs = 20.0;                // WAN delay in ms (one-way, central cloud)
@@ -835,15 +821,8 @@ main(int argc, char* argv[])
     cmd.AddValue("packetSize", "Control packet size in bytes", packetSize);
     cmd.AddValue("intervalMs", "Packet interval in ms", intervalMs);
 
-    // Background UEs for cell load
-    cmd.AddValue("numBackgroundUes", "Number of stationary background UEs for cell load", numBackgroundUes);
-    cmd.AddValue("bgUeTrafficMbps", "Traffic rate per background UE in Mbps", bgUeTrafficMbps);
-    cmd.AddValue("bgUePacketSize", "Background UE packet size in bytes", bgUePacketSize);
-
-    // Capacity testing
-    cmd.AddValue("loadPercent", "Target load as % of capacity (0=use numBackgroundUes)", loadPercent);
-    cmd.AddValue("capacityMbps", "Per-cell capacity in Mbps (0=auto-estimate)", capacityMbps);
-    cmd.AddValue("saturationTest", "Run saturation test to find max capacity", saturationTest);
+    // Cell load (RBG notching)
+    cmd.AddValue("loadPercent", "Simulated cell load as % of bandwidth via RBG notching (0=no load)", loadPercent);
 
     // Network
     cmd.AddValue("wanDelayMs", "WAN delay in ms (one-way)", wanDelayMs);
@@ -939,64 +918,11 @@ main(int argc, char* argv[])
                           slaThresholdMs,
                           packetSize, intervalMs,
                           trajectoryLogInterval,
-                          numBackgroundUes, bgUeTrafficMbps, bgUePacketSize,
-                          loadPercent, capacityMbps);
+                          loadPercent);
 
     //--------------------------------------------------------------------------
     // Capacity testing: Calculate load from percentage if specified
     //--------------------------------------------------------------------------
-
-    // Auto-estimate per-cell capacity based on bandwidth if not specified
-    // Rough estimates for NR with numerology 1 (30 kHz SCS):
-    //   5 MHz  -> ~15 Mbps per cell
-    //   10 MHz -> ~30 Mbps per cell
-    //   20 MHz -> ~60 Mbps per cell
-    //   50 MHz -> ~150 Mbps per cell
-    //   100 MHz -> ~300 Mbps per cell
-    if (capacityMbps <= 0.0)
-    {
-        // Estimate: ~3 Mbps per MHz (conservative for DL with overhead)
-        capacityMbps = (bandwidth / 1e6) * 3.0;
-    }
-
-    // If loadPercent is specified, calculate background traffic accordingly
-    if (loadPercent > 0.0)
-    {
-        double targetLoadMbps = capacityMbps * (loadPercent / 100.0);
-
-        // Calculate number of background UEs needed
-        // Each UE generates bgUeTrafficMbps of traffic
-        if (bgUeTrafficMbps > 0)
-        {
-            numBackgroundUes = static_cast<uint32_t>(std::ceil(targetLoadMbps / bgUeTrafficMbps));
-        }
-
-        NS_LOG_UNCOND("\n--- Capacity Testing Mode ---");
-        NS_LOG_UNCOND("Estimated per-cell capacity: " << capacityMbps << " Mbps");
-        NS_LOG_UNCOND("Target load: " << loadPercent << "% = " << targetLoadMbps << " Mbps");
-        NS_LOG_UNCOND("Background UEs calculated: " << numBackgroundUes
-                      << " (each " << bgUeTrafficMbps << " Mbps)");
-        NS_LOG_UNCOND("Actual load: " << (numBackgroundUes * bgUeTrafficMbps) << " Mbps ("
-                      << ((numBackgroundUes * bgUeTrafficMbps) / capacityMbps * 100.0) << "%)");
-    }
-
-    // Saturation test mode: progressively increase load
-    if (saturationTest)
-    {
-        NS_LOG_UNCOND("\n=== SATURATION TEST MODE ===");
-        NS_LOG_UNCOND("Estimated per-cell capacity: " << capacityMbps << " Mbps");
-        NS_LOG_UNCOND("Will test at 50%, 70%, 80%, 90%, 95%, 100%, 110% of capacity");
-        NS_LOG_UNCOND("Run with specific --loadPercent values to test each level");
-        NS_LOG_UNCOND("============================\n");
-
-        // For saturation test, default to 80% load if no loadPercent specified
-        if (loadPercent <= 0.0)
-        {
-            loadPercent = 80.0;
-            double targetLoadMbps = capacityMbps * (loadPercent / 100.0);
-            numBackgroundUes = static_cast<uint32_t>(std::ceil(targetLoadMbps / bgUeTrafficMbps));
-        }
-    }
 
     //--------------------------------------------------------------------------
     // Print configuration
@@ -1018,13 +944,9 @@ main(int argc, char* argv[])
     NS_LOG_UNCOND("Handover Interruption: " << handoverInterruptMs << " ms");
     NS_LOG_UNCOND("SLA Threshold: " << slaThresholdMs << " ms");
     NS_LOG_UNCOND("DL Control: " << packetSize << " bytes every " << intervalMs << " ms");
-    if (numBackgroundUes > 0)
+    if (loadPercent > 0.0)
     {
-        NS_LOG_UNCOND("----------------------------------------------");
-        NS_LOG_UNCOND("Background UEs: " << numBackgroundUes);
-        NS_LOG_UNCOND("  Traffic per UE: " << bgUeTrafficMbps << " Mbps ("
-                      << bgUePacketSize << " bytes/packet)");
-        NS_LOG_UNCOND("  Total cell load: " << (numBackgroundUes * bgUeTrafficMbps) << " Mbps");
+        NS_LOG_UNCOND("  Cell load: " << loadPercent << "% (RBG notching)");
     }
     NS_LOG_UNCOND("Simulation: " << simTime << " s");
     NS_LOG_UNCOND("Output: " << experimentDir);
@@ -1191,52 +1113,6 @@ main(int argc, char* argv[])
         }
     }
 
-    // Create background UEs for cell load (stationary, bidirectional traffic)
-    NodeContainer backgroundUeNodes;
-    if (numBackgroundUes > 0)
-    {
-        backgroundUeNodes.Create(numBackgroundUes);
-
-        // Place background UEs near each site (1 per site, then cycle)
-        // Site positions: center at (0,0), 6 outer sites at ~433m radius, 60° apart
-        MobilityHelper bgMobility;
-        Ptr<ListPositionAllocator> bgPosAlloc = CreateObject<ListPositionAllocator>();
-
-        // Calculate site positions (7 sites for numRings=1)
-        std::vector<Vector> sitePositions;
-        sitePositions.push_back(Vector(0, 0, 0));  // Center site
-
-        double siteRadius = isd / std::sqrt(3.0);  // ~433m for ISD=500m
-        for (int s = 0; s < 6; s++)
-        {
-            double siteAngle = M_PI / 6.0 + s * M_PI / 3.0;  // 30°, 90°, 150°, etc.
-            sitePositions.push_back(Vector(siteRadius * cos(siteAngle),
-                                           siteRadius * sin(siteAngle), 0));
-        }
-
-        // Place UEs near sites (offset by 100m to be within cell coverage)
-        double ueOffset = 100.0;
-        for (uint32_t i = 0; i < numBackgroundUes; i++)
-        {
-            uint32_t siteIdx = i % sitePositions.size();
-            Vector sitePos = sitePositions[siteIdx];
-
-            // Offset UE from site center (rotate offset for multiple UEs per site)
-            double offsetAngle = 2.0 * M_PI * (i / sitePositions.size()) / 3.0;
-            Vector pos(sitePos.x + ueOffset * cos(offsetAngle),
-                       sitePos.y + ueOffset * sin(offsetAngle),
-                       1.5);
-            bgPosAlloc->Add(pos);
-        }
-
-        bgMobility.SetPositionAllocator(bgPosAlloc);
-        bgMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-        bgMobility.Install(backgroundUeNodes);
-
-        NS_LOG_UNCOND("Created " << numBackgroundUes << " background UE(s) distributed across "
-                      << sitePositions.size() << " sites");
-    }
-
     //--------------------------------------------------------------------------
     // Set up NR network
     //--------------------------------------------------------------------------
@@ -1297,11 +1173,51 @@ main(int argc, char* argv[])
         nrHelper->GetGnbPhy(gnbNetDevs.Get(i), 0)->SetAttribute("TxPower", DoubleValue(gnbTxPower));
     }
 
-    // Install NR devices on background UEs
-    NetDeviceContainer bgUeNetDevs;
-    if (numBackgroundUes > 0)
+    //--------------------------------------------------------------------------
+    // Apply RBG notching to simulate cell load (lightweight, no background UEs)
+    // Notched RBGs are blocked from scheduling, reducing available bandwidth.
+    //--------------------------------------------------------------------------
+    if (loadPercent > 0.0)
     {
-        bgUeNetDevs = nrHelper->InstallUeDevice(backgroundUeNodes, allBwps);
+        uint32_t numRbg = nrHelper->GetGnbPhy(gnbNetDevs.Get(0), 0)->GetRbNum();
+        uint32_t notchedRbg = static_cast<uint32_t>(
+            std::round(numRbg * std::min(loadPercent, 99.0) / 100.0));
+
+        // DL mask: distributed notching — spread evenly across the band.
+        // CP-OFDM (DL) supports non-contiguous allocation, so spreading avoids
+        // conflicts with TDMA scheduler's index-0-based RBG assignment.
+        std::vector<bool> dlMask(numRbg, true);
+        for (uint32_t r = 0; r < notchedRbg; r++)
+        {
+            uint32_t idx = (r * numRbg) / notchedRbg;
+            dlMask[idx] = false;
+        }
+
+        // UL mask: tail notching — block the highest-indexed RBGs, keeping
+        // the lower indices contiguous. DFT-s-OFDM (UL in FR1) requires
+        // contiguous RB allocation; a distributed mask would fragment the
+        // spectrum and collapse UL throughput artificially.
+        std::vector<bool> ulMask(numRbg, true);
+        for (uint32_t r = 0; r < notchedRbg; r++)
+        {
+            ulMask[numRbg - 1 - r] = false;
+        }
+
+        for (uint32_t i = 0; i < gnbNetDevs.GetN(); i++)
+        {
+            Ptr<NrMacSchedulerNs3> scheduler =
+                DynamicCast<NrMacSchedulerNs3>(nrHelper->GetScheduler(gnbNetDevs.Get(i), 0));
+            scheduler->SetDlNotchedRbgMask(dlMask);
+            scheduler->SetUlNotchedRbgMask(ulMask);
+        }
+
+        NS_LOG_UNCOND("\n--- RBG Notching (Cell Load Simulation) ---");
+        NS_LOG_UNCOND("Load: " << loadPercent << "% -> notched " << notchedRbg
+                      << " of " << numRbg << " RBGs per cell");
+        NS_LOG_UNCOND("  DL: distributed (every ~" << (notchedRbg > 0 ? numRbg / notchedRbg : 0)
+                      << "th RBG, CP-OFDM)");
+        NS_LOG_UNCOND("  UL: tail-notched (RBGs " << (numRbg - notchedRbg)
+                      << "-" << (numRbg - 1) << " blocked, DFT-s-OFDM contiguous)");
     }
 
     //--------------------------------------------------------------------------
@@ -1323,12 +1239,6 @@ main(int argc, char* argv[])
     InternetStackHelper internet;
     internet.Install(ueNodes);
 
-    // Install internet stack on background UEs
-    if (numBackgroundUes > 0)
-    {
-        internet.Install(backgroundUeNodes);
-    }
-
     Ipv4InterfaceContainer ueIpIfaces = epcHelper->AssignUeIpv4Address(ueNetDevs);
     Ipv4Address ueIp = ueIpIfaces.GetAddress(0);
 
@@ -1340,35 +1250,12 @@ main(int argc, char* argv[])
 
     NS_LOG_UNCOND("UE IP: " << ueIp);
 
-    // Assign IPs and configure routes for background UEs
-    std::vector<Ipv4Address> bgUeIps;
-    if (numBackgroundUes > 0)
-    {
-        for (uint32_t i = 0; i < numBackgroundUes; i++)
-        {
-            Ipv4InterfaceContainer bgUeIpIface =
-                epcHelper->AssignUeIpv4Address(NetDeviceContainer(bgUeNetDevs.Get(i)));
-            bgUeIps.push_back(bgUeIpIface.GetAddress(0));
-
-            // Set default route
-            Ptr<Ipv4StaticRouting> bgUeRouting =
-                ipv4RoutingHelper.GetStaticRouting(backgroundUeNodes.Get(i)->GetObject<Ipv4>());
-            bgUeRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
-        }
-    }
-
     //--------------------------------------------------------------------------
     // Attach UE and configure X2 for handover
     //--------------------------------------------------------------------------
 
     nrHelper->AttachToClosestGnb(ueNetDevs, gnbNetDevs);
     nrHelper->AddX2Interface(gnbNodes);
-
-    // Attach background UEs to closest gNB
-    if (numBackgroundUes > 0)
-    {
-        nrHelper->AttachToClosestGnb(bgUeNetDevs, gnbNetDevs);
-    }
 
     // Get UE IMSI and initial serving cell
     Ptr<NrUeNetDevice> ueDev = ueNetDevs.Get(0)->GetObject<NrUeNetDevice>();
@@ -1406,45 +1293,6 @@ main(int argc, char* argv[])
     ApplicationContainer dlSinkApp = dlSink.Install(ueNodes.Get(0));
     dlSinkApp.Start(appStartTime);
     dlSinkApp.Stop(Seconds(simTime));
-
-    //--------------------------------------------------------------------------
-    // Install DL-only traffic on background UEs (creates cell load)
-    //--------------------------------------------------------------------------
-
-    if (numBackgroundUes > 0)
-    {
-        uint16_t bgBasePort = 4000;
-        double bgDataRateBps = bgUeTrafficMbps * 1e6;
-
-        for (uint32_t i = 0; i < numBackgroundUes; i++)
-        {
-            uint16_t dlPort = bgBasePort + i;
-
-            // Stagger start times: 100ms apart to avoid simultaneous bursts
-            Time bgStartTime = appStartTime + MilliSeconds(100 * i);
-
-            // DL only: Remote Host -> Background UE (avoids TDD collision)
-            OnOffHelper bgDlOnOff("ns3::UdpSocketFactory",
-                                   InetSocketAddress(bgUeIps[i], dlPort));
-            bgDlOnOff.SetConstantRate(DataRate(bgDataRateBps));
-            bgDlOnOff.SetAttribute("PacketSize", UintegerValue(bgUePacketSize));
-
-            ApplicationContainer bgDlApp = bgDlOnOff.Install(remoteHost);
-            bgDlApp.Start(bgStartTime);
-            bgDlApp.Stop(Seconds(simTime));
-
-            PacketSinkHelper bgDlSink("ns3::UdpSocketFactory",
-                                       InetSocketAddress(Ipv4Address::GetAny(), dlPort));
-            ApplicationContainer bgDlSinkApp = bgDlSink.Install(backgroundUeNodes.Get(i));
-            bgDlSinkApp.Start(bgStartTime);
-            bgDlSinkApp.Stop(Seconds(simTime));
-        }
-
-        NS_LOG_UNCOND("Background DL traffic: " << numBackgroundUes << " UEs x "
-                      << bgUeTrafficMbps << " Mbps = "
-                      << (numBackgroundUes * bgUeTrafficMbps) << " Mbps total"
-                      << " (staggered start: 100ms apart)");
-    }
 
     //--------------------------------------------------------------------------
     // Connect trace sources
