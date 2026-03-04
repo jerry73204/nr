@@ -959,7 +959,7 @@ inline std::optional<uint32_t> ExtractZenohPayloadSeq(Ptr<const Packet> packet, 
 
     if (debug && copied > 100)  // Only debug larger packets (likely contain payload)
     {
-        std::cout << "[ZENOH_SEQ] Scanning " << copied << " bytes, last 50: ";
+        NS_LOG_UNCOND("[ZENOH_SEQ] Scanning " << copied << " bytes, last 50: ");
         for (uint32_t i = (copied > 50 ? copied - 50 : 0); i < copied; i++)
         {
             if (buffer[i] >= 32 && buffer[i] < 127)
@@ -991,7 +991,7 @@ inline std::optional<uint32_t> ExtractZenohPayloadSeq(Ptr<const Packet> packet, 
                 {
                     if (debug)
                     {
-                        std::cout << "[ZENOH_SEQ] Found seq=" << seq << " at offset " << i << std::endl;
+                        NS_LOG_UNCOND("[ZENOH_SEQ] Found seq=" << seq << " at offset " << i);
                     }
                     return seq;  // Found valid "[XXX]" pattern
                 }
