@@ -1711,9 +1711,9 @@ main(int argc, char* argv[])
     nrHelper->SetUeAntennaAttribute("AntennaElement",
                                     PointerValue(CreateObject<IsotropicAntennaModel>()));
 
-    // Beamforming - use DirectPath for omnidirectional antenna setup
+    // Beamforming - use QuasiOmni so all UEs share one beam (enables MAC contention)
     idealBeamformingHelper->SetAttribute("BeamformingMethod",
-                                         TypeIdValue(DirectPathBeamforming::GetTypeId()));
+                                         TypeIdValue(QuasiOmniDirectPathBeamforming::GetTypeId()));
 
     // Configure gNB PHY attributes BEFORE InstallGnbDevice
     nrHelper->SetGnbPhyAttribute("TxPower", DoubleValue(gnbTxPower));
