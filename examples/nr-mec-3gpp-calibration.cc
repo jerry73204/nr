@@ -1015,7 +1015,7 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
 
 /**
  * @brief Generate a timestamped experiment directory name
- * @return Directory path in format "experiment_data/YYYY-MM-DD_HH-MM-SS"
+ * @return Timestamp string in format "MM-DD_HH-MM-SS"
  */
 std::string
 GenerateExperimentDir()
@@ -1023,8 +1023,8 @@ GenerateExperimentDir()
     time_t now = time(nullptr);
     struct tm* localTime = localtime(&now);
     char buffer[64];
-    strftime(buffer, sizeof(buffer), "%Y-%m-%d_%H-%M-%S", localTime);
-    return "experiment_data/" + std::string(buffer);
+    strftime(buffer, sizeof(buffer), "%m-%d_%H-%M-%S", localTime);
+    return std::string(buffer);
 }
 
 /**
@@ -1364,14 +1364,26 @@ main(int argc, char* argv[])
     // Set up experiment output directory and paths
     //--------------------------------------------------------------------------
 
-    // Generate experiment directory if not specified
+    // Generate experiment directory path
+    std::string timestamp = GenerateExperimentDir();
     if (experimentDir.empty())
     {
-        experimentDir = GenerateExperimentDir();
+        experimentDir = "experiment_data/" + timestamp;
+    }
+    else
+    {
+        experimentDir = "experiment_data/" + experimentDir + "/" + timestamp;
     }
 
-    // Create experiment directory (and parent if needed)
+    // Create experiment directory (and parents if needed)
     CreateDirectoryIfNeeded("experiment_data");
+    // Extract parent dir (e.g. "experiment_data/myName") and create it if present
+    auto lastSlash = experimentDir.rfind('/');
+    if (lastSlash != std::string::npos)
+    {
+        std::string parentDir = experimentDir.substr(0, lastSlash);
+        CreateDirectoryIfNeeded(parentDir);
+    }
     if (!CreateDirectoryIfNeeded(experimentDir))
     {
         NS_LOG_WARN("Failed to create experiment directory: " << experimentDir);
