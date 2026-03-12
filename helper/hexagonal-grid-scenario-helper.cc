@@ -203,8 +203,15 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
     double arrowLength =
         cellRadius /
         4.0; //<! Control the arrow length that indicates the orientation of the sectorized antenna
+    // Pointy-top sector hexagon vertices (used for numSectors > 1)
     std::vector<double> hx{0.0, -0.5, -0.5, 0.0, 0.5, 0.5, 0.0};   //<! Hexagon vertices in x-axis
     std::vector<double> hy{-1.0, -0.5, 0.5, 1.0, 0.5, -0.5, -1.0}; //<! Hexagon vertices in y-axis
+    // Flat-top Voronoi hexagon vertices (used for numSectors == 1).
+    // Circumradius R = sqrt(3)*cellRadius = ISD/sqrt(3), vertices at 0°,60°,...,300°.
+    const double voronoiR = std::sqrt(3.0) * cellRadius;
+    std::vector<double> vx{1.0, 0.5, -0.5, -1.0, -0.5, 0.5, 1.0};
+    std::vector<double> vy{0.0, std::sqrt(3.0) / 2, std::sqrt(3.0) / 2, 0.0,
+                           -std::sqrt(3.0) / 2, -std::sqrt(3.0) / 2, 0.0};
     Vector sitePos;
 
     for (uint16_t cellId = 0; cellId < numCells; ++cellId)
@@ -219,18 +226,30 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
         {
             sitePos = sitePosVector->GetNext();
         }
-        topologyOutfile << "set arrow " << cellId + 1 << " from " << sitePos.x << "," << sitePos.y
-                        << " rto " << arrowLength * std::cos(angleRad) << ","
-                        << arrowLength * std::sin(angleRad) << " arrowstyle 1 \n";
+        if (numSectors > 1)
+        {
+            topologyOutfile << "set arrow " << cellId + 1 << " from " << sitePos.x << ","
+                            << sitePos.y << " rto " << arrowLength * std::cos(angleRad) << ","
+                            << arrowLength * std::sin(angleRad) << " arrowstyle 1 \n";
+        }
 
         // Draw the hexagon around the cell center
         topologyOutfile << "set object " << cellId + 1 << " polygon from \\\n";
 
         for (uint16_t vertexId = 0; vertexId <= 6; ++vertexId)
         {
-            // angle of the vertex w.r.t. y-axis
-            x = cellRadius * std::sqrt(3.0) * hx.at(vertexId) + cellPos.x;
-            y = cellRadius * hy.at(vertexId) + cellPos.y;
+            if (numSectors == 1)
+            {
+                // Flat-top Voronoi hexagon centered at site, sized to ISD/sqrt(3)
+                x = voronoiR * vx.at(vertexId) + cellPos.x;
+                y = voronoiR * vy.at(vertexId) + cellPos.y;
+            }
+            else
+            {
+                // angle of the vertex w.r.t. y-axis
+                x = cellRadius * std::sqrt(3.0) * hx.at(vertexId) + cellPos.x;
+                y = cellRadius * hy.at(vertexId) + cellPos.y;
+            }
             topologyOutfile << x << ", " << y;
             if (vertexId == 6)
             {
