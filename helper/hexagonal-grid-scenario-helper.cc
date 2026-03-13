@@ -155,18 +155,16 @@ std::vector<double> HexagonalGridScenarioHelper::siteAngles{
 
 /**
  * @brief Creates a GNUPLOT with the hexagonal deployment including base stations
- * (BS), their hexagonal cell areas and user terminals (UT). Positions and cell
- * radius must be given in meters
+ * (BS) and their hexagonal cell areas. Positions and cell radius must be given
+ * in meters.
  *
  * @param sitePosVector Vector of site positions
  * @param cellCenterVector Vector of cell center positions
- * @param utPosVector Vector of user terminals positions
  * @param cellRadius Hexagonal cell radius in meters
  */
 static void
 PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
                         const Ptr<const ListPositionAllocator>& cellCenterVector,
-                        const Ptr<const ListPositionAllocator>& utPosVector,
                         double cellRadius,
                         std::string resultsDir,
                         std::string simTag)
@@ -174,10 +172,8 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
     uint16_t numCells = cellCenterVector->GetSize();
     uint16_t numSites = sitePosVector->GetSize();
     uint16_t numSectors = numCells / numSites;
-    uint16_t numUts = utPosVector->GetSize();
     NS_ASSERT_MSG(numCells > 0, "no cells");
     NS_ASSERT_MSG(numSites > 0, "no sites");
-    NS_ASSERT_MSG(numUts > 0, "no uts");
 
     // Try to open a new GNUPLOT file
     std::ofstream topologyOutfile;
@@ -265,13 +261,6 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
                         << cellPos.x << " , " << cellPos.y << " center" << std::endl;
     }
 
-    for (uint16_t utId = 0; utId < numUts; ++utId)
-    {
-        Vector utPos = utPosVector->GetNext();
-        //      set label at xPos, yPos, zPos "" point pointtype 7 pointsize 2
-        topologyOutfile << "set label at " << utPos.x << " , " << utPos.y
-                        << " point pointtype 7 pointsize 0.2 center" << std::endl;
-    }
 
     topologyOutfile << "unset key" << std::endl; //!< Disable plot legends
     topologyOutfile << "plot 1/0" << std::endl;  //!< Need to plot a function
@@ -484,7 +473,6 @@ HexagonalGridScenarioHelper::CreateScenario()
 
     PlotHexagonalDeployment(sitePosVector,
                             bsCenterVector,
-                            utPosVector,
                             m_hexagonalRadius,
                             m_resultsDir,
                             m_simTag);
@@ -649,7 +637,6 @@ HexagonalGridScenarioHelper::CreateScenarioWithMobility(const Vector& speed, dou
 
     PlotHexagonalDeployment(sitePosVector,
                             bsCenterVector,
-                            utPosVector,
                             m_hexagonalRadius,
                             m_resultsDir,
                             m_simTag);
@@ -722,7 +709,6 @@ HexagonalGridScenarioHelper::CreateScenarioWithCustomMobility(MobilityHelper& ue
 
     PlotHexagonalDeployment(sitePosVector,
                             bsCenterVector,
-                            utPosVector,
                             m_hexagonalRadius,
                             m_resultsDir,
                             m_simTag);
