@@ -266,7 +266,10 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
         }
 
         topologyOutfile << "set label " << cellId + 1 << " \"" << (cellId + 1) << "\" at "
-                        << cellPos.x << " , " << cellPos.y << " center" << std::endl;
+                        << cellPos.x << " , " << cellPos.y + 50 << " center" << std::endl;
+        topologyOutfile << "set label " << numCells + cellId + 1 << " \"\" at "
+                        << cellPos.x << " , " << cellPos.y
+                        << " point pt 9 ps 1 center" << std::endl;
     }
 
 
