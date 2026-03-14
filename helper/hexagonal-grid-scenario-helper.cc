@@ -185,10 +185,10 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
         NS_ABORT_MSG("Can't open " << topologyFileName);
     }
 
-    topologyOutfile << "set term pdf" << std::endl;
-    topologyOutfile << "set output \"" << topologyFileName << ".pdf\"" << std::endl;
+    topologyOutfile << "set term pngcairo size 800,800" << std::endl;
+    topologyOutfile << "set output \"" << topologyFileRoot << simTag << ".png\"" << std::endl;
+    topologyOutfile << "set size ratio -1" << std::endl;
     topologyOutfile << "set style arrow 1 lc \"black\" lt 1 head filled" << std::endl;
-    //  topologyOutfile << "set autoscale" << std::endl;
 
     // Pre-read all site positions to compute the plot bounds dynamically.
     std::vector<Vector> sitePositions;
