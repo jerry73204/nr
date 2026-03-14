@@ -190,11 +190,24 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
     topologyOutfile << "set style arrow 1 lc \"black\" lt 1 head filled" << std::endl;
     //  topologyOutfile << "set autoscale" << std::endl;
 
-    uint16_t margin =
-        (12 * cellRadius) + 1; //!< This is the farthest hexagonal vertex from the cell center
+    // Pre-read all site positions to compute the plot bounds dynamically.
+    std::vector<Vector> sitePositions;
+    double maxSiteDist = 0.0;
+    for (uint16_t i = 0; i < numSites; ++i)
+    {
+        Vector pos = sitePosVector->GetNext();
+        sitePositions.push_back(pos);
+        double dist = std::sqrt(pos.x * pos.x + pos.y * pos.y);
+        if (dist > maxSiteDist)
+        {
+            maxSiteDist = dist;
+        }
+    }
+    // Margin = farthest site + one Voronoi circumradius (ISD/sqrt(3)) of padding
+    const double voronoiR = std::sqrt(3.0) * cellRadius;
+    uint32_t margin = static_cast<uint32_t>(maxSiteDist + voronoiR + cellRadius);
     topologyOutfile << "set xrange [-" << margin << ":" << margin << "]" << std::endl;
     topologyOutfile << "set yrange [-" << margin << ":" << margin << "]" << std::endl;
-    // FIXME: Need to recalculate ranges if the scenario origin is different to (0,0)
 
     double arrowLength =
         cellRadius /
@@ -204,11 +217,9 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
     std::vector<double> hy{-1.0, -0.5, 0.5, 1.0, 0.5, -0.5, -1.0}; //<! Hexagon vertices in y-axis
     // Flat-top Voronoi hexagon vertices (used for numSectors == 1).
     // Circumradius R = sqrt(3)*cellRadius = ISD/sqrt(3), vertices at 0°,60°,...,300°.
-    const double voronoiR = std::sqrt(3.0) * cellRadius;
     std::vector<double> vx{1.0, 0.5, -0.5, -1.0, -0.5, 0.5, 1.0};
     std::vector<double> vy{0.0, std::sqrt(3.0) / 2, std::sqrt(3.0) / 2, 0.0,
                            -std::sqrt(3.0) / 2, -std::sqrt(3.0) / 2, 0.0};
-    Vector sitePos;
 
     for (uint16_t cellId = 0; cellId < numCells; ++cellId)
     {
@@ -218,10 +229,7 @@ PlotHexagonalDeployment(const Ptr<const ListPositionAllocator>& sitePosVector,
         double x;
         double y;
 
-        if (cellId % numSectors == 0)
-        {
-            sitePos = sitePosVector->GetNext();
-        }
+        const Vector& sitePos = sitePositions[cellId / numSectors];
         if (numSectors > 1)
         {
             topologyOutfile << "set arrow " << cellId + 1 << " from " << sitePos.x << ","
