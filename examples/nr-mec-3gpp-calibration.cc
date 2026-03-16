@@ -11,8 +11,8 @@
  * - MEC edge server tunneling from nr-mec-handover.cc
  *
  * Key features:
- * - Hexagonal grid deployment with configurable rings (1 ring = 7 sites, 7 cells)
- * - Single-sector sites (1 cell per site)
+ * - Hexagonal grid deployment with configurable rings (1 ring = 7 sites, 21 cells)
+ * - Three-sector sites (3 cells per site)
  * - One edge server per site
  * - IP-in-UDP tunneling for edge server communication
  * - Handover prediction and dynamic edge server switching
@@ -36,7 +36,7 @@
  *                    Site 5
  *                  (0, -500)
  *
- * Each site has 1 cell, and each site has one edge server.
+ * Each site has 3 cells (sectors), and each site has one edge server.
  * Intra-site handover: no edge server switch
  * Inter-site handover: edge server switch triggered
  */
@@ -1484,7 +1484,7 @@ main(int argc, char* argv[])
     ScenarioParameters scenarioParams;
     scenarioParams.SetScenarioParameters(scenario);
     scenarioParams.m_isd = isd;
-    scenarioParams.SetSectorization(1);  // Single-sector (1 cell per site)
+    scenarioParams.SetSectorization(3);  // Three-sector (3 cells per site)
 
     HexagonalGridScenarioHelper gridScenario;
     gridScenario.SetScenarioParameters(scenarioParams);
@@ -1712,11 +1712,11 @@ main(int argc, char* argv[])
     channelHelper->AssignChannelsToBands({band});
     allBwps = CcBwpCreator::GetAllBwps({band});
 
-    // Configure antennas (omnidirectional with moderate array gain for single-sector)
+    // Configure antennas (directional 3GPP antenna for 3-sector sites; bearing set per-gNB below)
     nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(4));
-    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(4));
+    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(8));
     nrHelper->SetGnbAntennaAttribute("AntennaElement",
-                                     PointerValue(CreateObject<IsotropicAntennaModel>()));
+                                     PointerValue(CreateObject<ThreeGppAntennaModel>()));
 
     nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(2));
     nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(4));
@@ -1743,6 +1743,16 @@ main(int argc, char* argv[])
     // Install NR devices
     NetDeviceContainer gnbNetDevs = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
     NetDeviceContainer ueNetDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
+
+    // Set per-sector bearing angles for 3-sector sites
+    for (uint32_t i = 0; i < gnbNetDevs.GetN(); ++i)
+    {
+        double orientationRad = gridScenario.GetAntennaOrientationRadians(i);
+        Ptr<NrGnbPhy> phy = nrHelper->GetGnbPhy(gnbNetDevs.Get(i), 0);
+        Ptr<UniformPlanarArray> antenna =
+            DynamicCast<UniformPlanarArray>(phy->GetSpectrumPhy()->GetAntenna());
+        antenna->SetAttribute("BearingAngle", DoubleValue(orientationRad));
+    }
 
     NetDeviceContainer bgUeNetDevs;
     if (backgroundUeNodes.GetN() > 0)
@@ -1949,20 +1959,24 @@ main(int argc, char* argv[])
             pgw->GetObject<Ipv4>()->GetInterfaceForAddress(pgwEdgeIpIfaces.GetAddress(0))
         );
 
-        // Map this site's cell to this edge server (1 cell per site)
+        // Map ALL cells of this site to this edge server (3 cells per site)
         // NOTE: Only map by actual NR cell ID to avoid collisions with node indices
-        uint32_t nodeIdx = siteId;  // 1 cell per site
-        if (nodeIdx < numCells)
+        for (uint32_t sector = 0; sector < 3; ++sector)
         {
-            // Get actual cell ID from the device
-            Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(nodeIdx)->GetObject<NrGnbNetDevice>();
-            uint16_t actualCellId = gnbNetDevice->GetCellId();
-            g_cellIdToEdgeServer[actualCellId] = edgeServerNodes.Get(siteId);
-            g_cellIdToEdgeServerIp[actualCellId] = edgeServerIp;
+            uint32_t nodeIdx = siteId * 3 + sector;
+            if (nodeIdx < numCells)
+            {
+                // Get actual cell ID from the device
+                Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(nodeIdx)->GetObject<NrGnbNetDevice>();
+                uint16_t actualCellId = gnbNetDevice->GetCellId();
+                g_cellIdToEdgeServer[actualCellId] = edgeServerNodes.Get(siteId);
+                g_cellIdToEdgeServerIp[actualCellId] = edgeServerIp;
+            }
         }
 
         NS_LOG_INFO("Edge Server " << siteId << " (IP: " << edgeServerIp
-                    << ") serves Site " << siteId << " (cell " << siteId << ")");
+                    << ") serves Site " << siteId << " (cells "
+                    << siteId * 3 << "-" << std::min(siteId * 3 + 2, numCells - 1) << ")");
     }
 
     //--------------------------------------------------------------------------
@@ -1986,14 +2000,17 @@ main(int argc, char* argv[])
             Ipv4Address innerEdgeIp = edgeServerIps[innerSiteId];
             Ptr<Node> innerEdgeNode = edgeServerNodes.Get(innerSiteId);
 
-            // Map this outer site's cell to the inner edge server (1 cell per site)
-            uint32_t nodeIdx = outerSiteId;  // 1 cell per site
-            if (nodeIdx < numCells)
+            // Map all 3 sectors of this outer site to the inner edge server
+            for (uint32_t sector = 0; sector < 3; ++sector)
             {
-                Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(nodeIdx)->GetObject<NrGnbNetDevice>();
-                uint16_t actualCellId = gnbNetDevice->GetCellId();
-                g_cellIdToEdgeServer[actualCellId] = innerEdgeNode;
-                g_cellIdToEdgeServerIp[actualCellId] = innerEdgeIp;
+                uint32_t nodeIdx = outerSiteId * 3 + sector;
+                if (nodeIdx < numCells)
+                {
+                    Ptr<NrGnbNetDevice> gnbNetDevice = gnbNetDevs.Get(nodeIdx)->GetObject<NrGnbNetDevice>();
+                    uint16_t actualCellId = gnbNetDevice->GetCellId();
+                    g_cellIdToEdgeServer[actualCellId] = innerEdgeNode;
+                    g_cellIdToEdgeServerIp[actualCellId] = innerEdgeIp;
+                }
             }
 
             NS_LOG_UNCOND("Outer Site " << outerSiteId << " -> Edge " << innerSiteId
