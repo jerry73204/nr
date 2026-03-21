@@ -789,25 +789,25 @@ public:
         double avgLatency = m_sumLatency / m_totalPackets;
         double violationRate = (100.0 * m_slaViolations) / m_totalPackets;
 
-        std::cout << "\n";
-        std::cout << "═══════════════════════════════════════════════════════════\n";
-        std::cout << "  ZENOH E2E LATENCY (Source Info based)\n";
-        std::cout << "═══════════════════════════════════════════════════════════\n";
-        std::cout << "  Source Edge Node:    " << m_sourceEdgeNodeId << "\n";
-        std::cout << "  SLA Threshold:       " << m_slaThresholdMs << " ms\n";
-        std::cout << "───────────────────────────────────────────────────────────\n";
-        std::cout << "  Total Packets:       " << m_totalPackets << "\n";
-        std::cout << "  SLA Violations:      " << m_slaViolations
-                  << " (" << std::fixed << std::setprecision(1) << violationRate << "%)\n";
-        std::cout << "  Pending (unmatched): " << m_pendingSends.size() << "\n";
-        std::cout << "───────────────────────────────────────────────────────────\n";
-        std::cout << "  Min Latency:         " << std::fixed << std::setprecision(3)
-                  << m_minLatency << " ms\n";
-        std::cout << "  Avg Latency:         " << avgLatency << " ms\n";
-        std::cout << "  Max Latency:         " << m_maxLatency << " ms\n";
-        std::cout << "═══════════════════════════════════════════════════════════\n";
-        std::cout << "  Output File:         " << m_outputPath << "\n";
-        std::cout << "═══════════════════════════════════════════════════════════\n\n";
+        // std::cout << "\n";
+        // std::cout << "═══════════════════════════════════════════════════════════\n";
+        // std::cout << "  ZENOH E2E LATENCY (Source Info based)\n";
+        // std::cout << "═══════════════════════════════════════════════════════════\n";
+        // std::cout << "  Source Edge Node:    " << m_sourceEdgeNodeId << "\n";
+        // std::cout << "  SLA Threshold:       " << m_slaThresholdMs << " ms\n";
+        // std::cout << "───────────────────────────────────────────────────────────\n";
+        // std::cout << "  Total Packets:       " << m_totalPackets << "\n";
+        // std::cout << "  SLA Violations:      " << m_slaViolations
+        //           << " (" << std::fixed << std::setprecision(1) << violationRate << "%)\n";
+        // std::cout << "  Pending (unmatched): " << m_pendingSends.size() << "\n";
+        // std::cout << "───────────────────────────────────────────────────────────\n";
+        // std::cout << "  Min Latency:         " << std::fixed << std::setprecision(3)
+        //           << m_minLatency << " ms\n";
+        // std::cout << "  Avg Latency:         " << avgLatency << " ms\n";
+        // std::cout << "  Max Latency:         " << m_maxLatency << " ms\n";
+        // std::cout << "═══════════════════════════════════════════════════════════\n";
+        // std::cout << "  Output File:         " << m_outputPath << "\n";
+        // std::cout << "═══════════════════════════════════════════════════════════\n\n";
     }
 
     void Close()

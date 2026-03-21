@@ -981,37 +981,37 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
     resultsFile.close();
 
     // Print summary to console
-    NS_LOG_UNCOND("\n═══════════════════════════════════════════════════════════");
-    NS_LOG_UNCOND("  SIMULATION RESULTS SUMMARY");
-    NS_LOG_UNCOND("═══════════════════════════════════════════════════════════");
-    NS_LOG_UNCOND("  Simulation Time:     " << simTime << " s");
-    NS_LOG_UNCOND("  SLA Threshold:       " << slaThresholdMs << " ms");
-    NS_LOG_UNCOND("───────────────────────────────────────────────────────────");
-    NS_LOG_UNCOND("  PACKET METRICS:");
-    NS_LOG_UNCOND("    Packets Sent:      " << totalPacketsSent);
-    NS_LOG_UNCOND("    Packets Received:  " << receivedPackets);
-    NS_LOG_UNCOND("    Packets Lost:      " << lostPackets << " (" << std::fixed << std::setprecision(2) << packetLossRate << "%)");
-    NS_LOG_UNCOND("───────────────────────────────────────────────────────────");
-    NS_LOG_UNCOND("  LATENCY METRICS:");
-    NS_LOG_UNCOND("    Min Latency:       " << std::fixed << std::setprecision(3) << minLatency << " ms");
-    NS_LOG_UNCOND("    Average Latency:   " << std::fixed << std::setprecision(3) << avgLatency << " ms");
-    NS_LOG_UNCOND("    Max Latency:       " << std::fixed << std::setprecision(3) << maxLatency << " ms");
-    NS_LOG_UNCOND("    SLA Violations:    " << slaViolations << " (" << std::fixed << std::setprecision(2) << slaViolationRate << "%)");
-    NS_LOG_UNCOND("───────────────────────────────────────────────────────────");
-    NS_LOG_UNCOND("  HANDOVER METRICS:");
-    NS_LOG_UNCOND("    Total Handovers:   " << totalHandovers);
-    NS_LOG_UNCOND("    Successful:        " << successfulHandovers << " (" << std::fixed << std::setprecision(2) << handoverSuccessRate << "%)");
-    NS_LOG_UNCOND("    Inter-Site:        " << interSiteHandovers);
-    NS_LOG_UNCOND("    Intra-Site:        " << intraSiteHandovers);
-    if (successfulHandovers > 0)
-    {
-        NS_LOG_UNCOND("    Avg HO Duration:   " << std::fixed << std::setprecision(3) << avgHandoverDuration << " ms");
-        NS_LOG_UNCOND("    Min HO Duration:   " << std::fixed << std::setprecision(3) << minHandoverDuration << " ms");
-        NS_LOG_UNCOND("    Max HO Duration:   " << std::fixed << std::setprecision(3) << maxHandoverDuration << " ms");
-    }
-    NS_LOG_UNCOND("═══════════════════════════════════════════════════════════");
-    NS_LOG_UNCOND("  Results saved to:    " << outputPath);
-    NS_LOG_UNCOND("═══════════════════════════════════════════════════════════\n");
+    std::cout << "\n═══════════════════════════════════════════════════════════\n";
+    std::cout << "  SIMULATION RESULTS SUMMARY\n";
+    std::cout << "═══════════════════════════════════════════════════════════\n";
+    std::cout << "  Simulation Time:     " << simTime << " s\n";
+    std::cout << "  SLA Threshold:       " << slaThresholdMs << " ms\n";
+    std::cout << "───────────────────────────────────────────────────────────\n";
+    std::cout << "  PACKET METRICS:\n";
+    std::cout << "    Packets Sent:      " << totalPacketsSent << "\n";
+    std::cout << "    Packets Received:  " << receivedPackets << "\n";
+    std::cout << "    Packets Lost:      " << lostPackets << " (" << std::fixed << std::setprecision(2) << packetLossRate << "%)\n";
+    std::cout << "───────────────────────────────────────────────────────────\n";
+    std::cout << "  LATENCY METRICS:\n";
+    std::cout << "    Min Latency:       " << std::fixed << std::setprecision(4) << minLatency << " ms\n";
+    std::cout << "    Average Latency:   " << std::fixed << std::setprecision(4) << avgLatency << " ms\n";
+    std::cout << "    Max Latency:       " << std::fixed << std::setprecision(4) << maxLatency << " ms\n";
+    std::cout << "    SLA Violations:    " << slaViolations << " (" << std::fixed << std::setprecision(2) << slaViolationRate << "%)\n";
+    std::cout << "───────────────────────────────────────────────────────────\n";
+    std::cout << "  HANDOVER METRICS:\n";
+    std::cout << "    Total Handovers:   " << totalHandovers << "\n";
+    std::cout << "    Successful:        " << successfulHandovers << " (" << std::fixed << std::setprecision(2) << handoverSuccessRate << "%)\n";
+    // std::cout << "    Inter-Site:        " << interSiteHandovers << "\n";
+    // std::cout << "    Intra-Site:        " << intraSiteHandovers << "\n";
+    // if (successfulHandovers > 0)
+    // {
+    //     std::cout << "    Avg HO Duration:   " << std::fixed << std::setprecision(3) << avgHandoverDuration << " ms\n";
+    //     std::cout << "    Min HO Duration:   " << std::fixed << std::setprecision(3) << minHandoverDuration << " ms\n";
+    //     std::cout << "    Max HO Duration:   " << std::fixed << std::setprecision(3) << maxHandoverDuration << " ms\n";
+    // }
+    std::cout << "═══════════════════════════════════════════════════════════\n";
+    std::cout << "  Results saved to:    " << outputPath << "\n";
+    std::cout << "═══════════════════════════════════════════════════════════\n\n";
 }
 
 //==============================================================================
