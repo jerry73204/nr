@@ -771,9 +771,6 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
 
     // Calculate packet loss (pending packets at end of simulation are considered lost)
     uint64_t lostPackets = tracker.GetPendingPackets();
-    uint64_t totalPacketsSent = receivedPackets + lostPackets;
-    double packetLossRate = totalPacketsSent > 0 ?
-        (100.0 * lostPackets / totalPacketsSent) : 0.0;
 
     // Handover statistics
     uint32_t totalHandovers = g_handoverEvents.size();
@@ -817,66 +814,6 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
     {
         NS_LOG_WARN("Failed to open results file: " << outputPath);
         return;
-    }
-
-    resultsFile << "# Simulation Results Summary\n";
-    resultsFile << "# Generated at simulation end\n";
-    resultsFile << "\n";
-
-    // CSV format section for easy parsing
-    resultsFile << "[METRICS]\n";
-    resultsFile << "metric,value\n";
-    resultsFile << "simulation_time_s," << simTime << "\n";
-    resultsFile << "sla_threshold_ms," << slaThresholdMs << "\n";
-    resultsFile << "\n";
-
-    resultsFile << "[LATENCY]\n";
-    resultsFile << "metric,value\n";
-    resultsFile << "total_packets_sent," << totalPacketsSent << "\n";
-    resultsFile << "total_packets_received," << receivedPackets << "\n";
-    resultsFile << "packets_lost," << lostPackets << "\n";
-    resultsFile << "packet_loss_rate_percent," << std::fixed << std::setprecision(2) << packetLossRate << "\n";
-    resultsFile << "min_latency_ms," << std::fixed << std::setprecision(3) << minLatency << "\n";
-    resultsFile << "avg_latency_ms," << std::fixed << std::setprecision(3) << avgLatency << "\n";
-    resultsFile << "max_latency_ms," << std::fixed << std::setprecision(3) << maxLatency << "\n";
-    resultsFile << "sla_violations," << slaViolations << "\n";
-    resultsFile << "sla_violation_rate_percent," << std::fixed << std::setprecision(2) << slaViolationRate << "\n";
-    resultsFile << "\n";
-
-    resultsFile << "[HANDOVER]\n";
-    resultsFile << "metric,value\n";
-    resultsFile << "total_handovers," << totalHandovers << "\n";
-    resultsFile << "successful_handovers," << successfulHandovers << "\n";
-    resultsFile << "failed_handovers," << (totalHandovers - successfulHandovers) << "\n";
-    resultsFile << "handover_success_rate_percent," << std::fixed << std::setprecision(2) << handoverSuccessRate << "\n";
-    resultsFile << "inter_site_handovers," << interSiteHandovers << "\n";
-    resultsFile << "intra_site_handovers," << intraSiteHandovers << "\n";
-    if (successfulHandovers > 0)
-    {
-        resultsFile << "avg_handover_duration_ms," << std::fixed << std::setprecision(3) << avgHandoverDuration << "\n";
-        resultsFile << "min_handover_duration_ms," << std::fixed << std::setprecision(3) << minHandoverDuration << "\n";
-        resultsFile << "max_handover_duration_ms," << std::fixed << std::setprecision(3) << maxHandoverDuration << "\n";
-    }
-    resultsFile << "\n";
-
-    // Detailed handover events
-    resultsFile << "[HANDOVER_EVENTS]\n";
-    resultsFile << "start_time_s,end_time_s,duration_ms,imsi,source_cell,target_cell,source_site,target_site,is_inter_site,success\n";
-    for (const auto& event : g_handoverEvents)
-    {
-        double durationMs = event.success ?
-            (event.endTime - event.startTime).GetMilliSeconds() : -1.0;
-        resultsFile << std::fixed << std::setprecision(3)
-                    << event.startTime.GetSeconds() << ","
-                    << (event.success ? event.endTime.GetSeconds() : -1.0) << ","
-                    << durationMs << ","
-                    << event.imsi << ","
-                    << event.sourceCell << ","
-                    << event.targetCell << ","
-                    << event.sourceSite << ","
-                    << event.targetSite << ","
-                    << (event.isInterSite ? 1 : 0) << ","
-                    << (event.success ? 1 : 0) << "\n";
     }
 
     // Get lost packet details for correlation with connected sites
@@ -938,15 +875,83 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
     {
         double sendTimeMs = loss.first;
         uint32_t sn = loss.second;
+        if (sendTimeMs + 50 > simEndMs){
+            lostPackets -=1;
+            continue;
+        }
         for (auto& period : connectionPeriods)
         {
-            if (sendTimeMs >= period.startTimeMs && sendTimeMs < period.endTimeMs)
+            if (sendTimeMs >= period.startTimeMs-2 && sendTimeMs < period.endTimeMs)
             {
                 period.packetsLost++;
                 lostPacketsBySite.push_back({period.siteId, sn, sendTimeMs});
                 break;
             }
         }
+    }
+
+    uint64_t totalPacketsSent = receivedPackets + lostPackets;
+    double packetLossRate = totalPacketsSent > 0 ?
+        (100.0 * lostPackets / totalPacketsSent) : 0.0;
+
+    resultsFile << "# Simulation Results Summary\n";
+    resultsFile << "# Generated at simulation end\n";
+    resultsFile << "\n";
+
+    // CSV format section for easy parsing
+    resultsFile << "[METRICS]\n";
+    resultsFile << "metric,value\n";
+    resultsFile << "simulation_time_s," << simTime << "\n";
+    resultsFile << "sla_threshold_ms," << slaThresholdMs << "\n";
+    resultsFile << "\n";
+
+    resultsFile << "[LATENCY]\n";
+    resultsFile << "metric,value\n";
+    resultsFile << "total_packets_sent," << totalPacketsSent << "\n";
+    resultsFile << "total_packets_received," << receivedPackets << "\n";
+    resultsFile << "packets_lost," << lostPackets << "\n";
+    resultsFile << "packet_loss_rate_percent," << std::fixed << std::setprecision(2) << packetLossRate << "\n";
+    resultsFile << "min_latency_ms," << std::fixed << std::setprecision(3) << minLatency << "\n";
+    resultsFile << "avg_latency_ms," << std::fixed << std::setprecision(3) << avgLatency << "\n";
+    resultsFile << "max_latency_ms," << std::fixed << std::setprecision(3) << maxLatency << "\n";
+    resultsFile << "sla_violations," << slaViolations << "\n";
+    resultsFile << "sla_violation_rate_percent," << std::fixed << std::setprecision(2) << slaViolationRate << "\n";
+    resultsFile << "\n";
+
+    resultsFile << "[HANDOVER]\n";
+    resultsFile << "metric,value\n";
+    resultsFile << "total_handovers," << totalHandovers << "\n";
+    resultsFile << "successful_handovers," << successfulHandovers << "\n";
+    resultsFile << "failed_handovers," << (totalHandovers - successfulHandovers) << "\n";
+    resultsFile << "handover_success_rate_percent," << std::fixed << std::setprecision(2) << handoverSuccessRate << "\n";
+    resultsFile << "inter_site_handovers," << interSiteHandovers << "\n";
+    resultsFile << "intra_site_handovers," << intraSiteHandovers << "\n";
+    if (successfulHandovers > 0)
+    {
+        resultsFile << "avg_handover_duration_ms," << std::fixed << std::setprecision(3) << avgHandoverDuration << "\n";
+        resultsFile << "min_handover_duration_ms," << std::fixed << std::setprecision(3) << minHandoverDuration << "\n";
+        resultsFile << "max_handover_duration_ms," << std::fixed << std::setprecision(3) << maxHandoverDuration << "\n";
+    }
+    resultsFile << "\n";
+
+    // Detailed handover events
+    resultsFile << "[HANDOVER_EVENTS]\n";
+    resultsFile << "start_time_s,end_time_s,duration_ms,imsi,source_cell,target_cell,source_site,target_site,is_inter_site,success\n";
+    for (const auto& event : g_handoverEvents)
+    {
+        double durationMs = event.success ?
+            (event.endTime - event.startTime).GetMilliSeconds() : -1.0;
+        resultsFile << std::fixed << std::setprecision(3)
+                    << event.startTime.GetSeconds() << ","
+                    << (event.success ? event.endTime.GetSeconds() : -1.0) << ","
+                    << durationMs << ","
+                    << event.imsi << ","
+                    << event.sourceCell << ","
+                    << event.targetCell << ","
+                    << event.sourceSite << ","
+                    << event.targetSite << ","
+                    << (event.isInterSite ? 1 : 0) << ","
+                    << (event.success ? 1 : 0) << "\n";
     }
 
     // Output per-site connection periods with loss counts
@@ -971,7 +976,7 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
                     << std::fixed << std::setprecision(3)
                     << pkt.timestampMs << "\n";
     }
-    resultsFile << "total,," << lostPacketDetails.size() << "\n";
+    resultsFile << "total,," << lostPackets << "\n";
 
     resultsFile.close();
 
