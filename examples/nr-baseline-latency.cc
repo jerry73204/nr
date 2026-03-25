@@ -775,7 +775,7 @@ main(int argc, char* argv[])
     uint16_t numerology = 1;                 // NR numerology
 
     // Traffic parameters (DL control commands only)
-    uint32_t packetSize = 100;               // Control packet size in bytes
+    uint32_t packetSize = 125;               // Control packet size in bytes
     double intervalMs = 50.0;                // Packet interval in ms (20 Hz)
 
     // Cell load simulation via RBG notching (lightweight, no background UEs needed)
