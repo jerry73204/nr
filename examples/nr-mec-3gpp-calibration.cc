@@ -2352,6 +2352,30 @@ main(int argc, char* argv[])
                       << bgTargetGnbs << "] x " << bgTrafficMbps << " Mbps DL");
     }
 
+    // Synthetic DL traffic for main UE when tap bridge is disabled (trace-mode)
+    // Mimics Docker application packets: 137B every 50ms
+    if (!enableTap)
+    {
+        Ptr<Node> pgwNode = epcHelper->GetPgwNode();
+        uint16_t syntheticDlPort = 4000;
+
+        PacketSinkHelper syntheticSinkHelper("ns3::UdpSocketFactory",
+            InetSocketAddress(Ipv4Address::GetAny(), syntheticDlPort));
+        ApplicationContainer syntheticSinkApp = syntheticSinkHelper.Install(ueNodes.Get(0));
+        syntheticSinkApp.Start(Seconds(0.1));
+
+        UdpClientHelper syntheticClientHelper(ueIpIfaces.GetAddress(0), syntheticDlPort);
+        syntheticClientHelper.SetAttribute("MaxPackets", UintegerValue(UINT32_MAX));
+        syntheticClientHelper.SetAttribute("Interval", TimeValue(MilliSeconds(50)));
+        syntheticClientHelper.SetAttribute("PacketSize", UintegerValue(137));
+
+        ApplicationContainer syntheticSourceApp = syntheticClientHelper.Install(pgwNode);
+        syntheticSourceApp.Start(Seconds(2.0));
+
+        NS_LOG_UNCOND("\nSynthetic DL traffic (no-tap): 137B/50ms -> main UE "
+                      << ueIpIfaces.GetAddress(0) << ":" << syntheticDlPort);
+    }
+
     // Initialize serving cell tracking and update tunnel endpoint based on actual attachment
     for (uint32_t i = 0; i < ueNetDevs.GetN(); ++i)
     {
@@ -2501,6 +2525,11 @@ main(int argc, char* argv[])
     // Run simulation
     //--------------------------------------------------------------------------
     NS_LOG_INFO("Starting simulation...");
+    if (!enableTap)
+    {
+        nrHelper->EnableDlMacSchedTraces();
+        NS_LOG_UNCOND("DL MAC scheduling traces enabled -> NrDlMacStats.txt");
+    }
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
 
