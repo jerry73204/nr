@@ -864,6 +864,40 @@ public:
         return lostPackets;
     }
 
+    struct SlaViolationDetail
+    {
+        double sendTimeMs;
+        uint32_t sourceSn;
+        double latencyMs; // -1.0 for lost packets (latency unknown)
+        bool isLost;
+    };
+
+    /**
+     * @brief Get details of latency-based SLA-violating packets (latency > threshold).
+     * Lost packets are not included here; merge them in the caller.
+     * @return Vector of SlaViolationDetail sorted by send time
+     */
+    std::vector<SlaViolationDetail> GetSlaViolationDetails() const
+    {
+        std::vector<SlaViolationDetail> violations;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (const auto& row : m_csvBuffer)
+        {
+            if (row.slaViolation)
+            {
+                violations.push_back({static_cast<double>(row.sendTimeMs),
+                                      row.sourceSn,
+                                      row.latencyMs,
+                                      false});
+            }
+        }
+        std::sort(violations.begin(), violations.end(),
+                  [](const SlaViolationDetail& a, const SlaViolationDetail& b) {
+                      return a.sendTimeMs < b.sendTimeMs;
+                  });
+        return violations;
+    }
+
 private:
     ZenohLatencyTracker() = default;
     ~ZenohLatencyTracker() { Close(); }

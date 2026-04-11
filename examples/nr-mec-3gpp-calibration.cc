@@ -764,7 +764,6 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
     // Get latency statistics from ZenohLatencyTracker
     auto& tracker = ZenohLatencyTracker::GetInstance();
     uint64_t receivedPackets = tracker.GetTotalPackets();
-    uint64_t slaViolations = tracker.GetSlaViolations();
     double avgLatency = tracker.GetAvgLatency();
     double minLatency = tracker.GetMinLatency();
     double maxLatency = tracker.GetMaxLatency();
@@ -805,8 +804,6 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
         totalHandoverDuration / successfulHandovers : 0.0;
     double handoverSuccessRate = totalHandovers > 0 ?
         (100.0 * successfulHandovers / totalHandovers) : 100.0;
-    double slaViolationRate = receivedPackets > 0 ?
-        (100.0 * slaViolations / receivedPackets) : 0.0;
 
     // Write results to file
     std::ofstream resultsFile(outputPath);
@@ -894,6 +891,11 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
     double packetLossRate = totalPacketsSent > 0 ?
         (100.0 * lostPackets / totalPacketsSent) : 0.0;
 
+    // SLA violations = latency violations + lost packets (both constitute an SLA breach)
+    uint64_t slaViolations = tracker.GetSlaViolations() + lostPackets;
+    double slaViolationRate = totalPacketsSent > 0 ?
+        (100.0 * slaViolations / totalPacketsSent) : 0.0;
+
     resultsFile << "# Simulation Results Summary\n";
     resultsFile << "# Generated at simulation end\n";
     resultsFile << "\n";
@@ -966,17 +968,36 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
                     << period.packetsLost << "\n";
     }
 
-    // List each lost packet with site, sequence number, and timestamp
-    resultsFile << "\n[LOST_PACKETS]\n";
-    resultsFile << "site_id,sn,timestamp_ms\n";
+    // Merge latency-based SLA violations and lost packets into one sorted list
+    auto slaViolationDetails = tracker.GetSlaViolationDetails();
     for (const auto& pkt : lostPacketsBySite)
     {
-        resultsFile << pkt.siteId << ","
-                    << pkt.sn << ","
-                    << std::fixed << std::setprecision(3)
-                    << pkt.timestampMs << "\n";
+        slaViolationDetails.push_back({pkt.timestampMs, pkt.sn, -1.0, true});
     }
-    resultsFile << "total,," << lostPackets << "\n";
+    std::sort(slaViolationDetails.begin(), slaViolationDetails.end(),
+              [](const auto& a, const auto& b) { return a.sendTimeMs < b.sendTimeMs; });
+
+    resultsFile << "\n[SLA_VIOLATION_PACKETS]\n";
+    resultsFile << "site_id,sn,send_time_ms,latency_ms,type\n";
+    for (const auto& viol : slaViolationDetails)
+    {
+        uint16_t siteId = 0;
+        for (const auto& period : connectionPeriods)
+        {
+            if (viol.sendTimeMs >= period.startTimeMs && viol.sendTimeMs < period.endTimeMs)
+            {
+                siteId = period.siteId;
+                break;
+            }
+        }
+        resultsFile << siteId << ","
+                    << viol.sourceSn << ","
+                    << std::fixed << std::setprecision(3)
+                    << viol.sendTimeMs << ","
+                    << viol.latencyMs << ","
+                    << (viol.isLost ? "lost" : "latency") << "\n";
+    }
+    resultsFile << "total,,,," << slaViolations << "\n";
 
     resultsFile.close();
 
