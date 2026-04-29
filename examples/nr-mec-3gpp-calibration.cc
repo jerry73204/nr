@@ -149,7 +149,8 @@ std::vector<MeasurementRecord> g_measurementReportBuffer;
 struct HandoverEvent
 {
     Time startTime;
-    Time endTime;
+    Time endTime;     // UE-side HandoverEndOk
+    Time enbEndTime;  // gNB-side HandoverEndOk = T_L2_Ready
     uint64_t imsi;
     uint16_t sourceCell;
     uint16_t targetCell;
@@ -461,7 +462,8 @@ HandoverStartCallback(std::string path,
     // Record handover event for statistics
     HandoverEvent event;
     event.startTime = now;
-    event.endTime = Time(0);  // Will be set when handover completes
+    event.endTime = Time(0);    // Will be set when handover completes
+    event.enbEndTime = Time(0); // Will be set by GnbHandoverEndOkCallback
     event.imsi = imsi;
     event.sourceCell = sourceCellId;
     event.targetCell = targetCellId;
@@ -534,6 +536,30 @@ HandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t
         {
             it->endTime = now;
             it->success = true;
+            break;
+        }
+    }
+}
+
+/**
+ * @brief Callback when gNB successfully processes RrcConnectionReconfigurationCompleted (T_L2_Ready)
+ */
+void
+GnbHandoverEndOkCallback(std::string path, uint64_t imsi, uint16_t cellId, uint16_t rnti)
+{
+    if (g_mainUeImsi != 0 && imsi != g_mainUeImsi)
+    {
+        return;
+    }
+    Time now = Simulator::Now();
+    for (auto it = g_handoverEvents.rbegin(); it != g_handoverEvents.rend(); ++it)
+    {
+        if (it->imsi == imsi && it->success && it->targetCell == cellId &&
+            it->enbEndTime == Time(0))
+        {
+            it->enbEndTime = now;
+            NS_LOG_UNCOND(now.GetSeconds() << "s [GNB HANDOVER END OK] IMSI=" << imsi
+                                           << " Cell=" << cellId << " (T_L2_Ready)");
             break;
         }
     }
@@ -938,7 +964,7 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
 
     // Detailed handover events
     resultsFile << "[HANDOVER_EVENTS]\n";
-    resultsFile << "start_time_s,end_time_s,duration_ms,imsi,source_cell,target_cell,source_site,target_site,is_inter_site,success\n";
+    resultsFile << "start_time_s,end_time_s,enb_end_time_s,duration_ms,imsi,source_cell,target_cell,source_site,target_site,is_inter_site,success\n";
     for (const auto& event : g_handoverEvents)
     {
         double durationMs = event.success ?
@@ -946,6 +972,7 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
         resultsFile << std::fixed << std::setprecision(3)
                     << event.startTime.GetSeconds() << ","
                     << (event.success ? event.endTime.GetSeconds() : -1.0) << ","
+                    << (event.enbEndTime > Time(0) ? event.enbEndTime.GetSeconds() : -1.0) << ","
                     << durationMs << ","
                     << event.imsi << ","
                     << event.sourceCell << ","
@@ -2458,6 +2485,15 @@ main(int argc, char* argv[])
         path << "/NodeList/" << gnbNodes.Get(i)->GetId()
              << "/DeviceList/0/NrGnbRrc/RecvMeasurementReport";
         Config::Connect(path.str(), MakeCallback(&MeasurementReportCallback));
+    }
+
+    // gNB-side handover completion callback (T_L2_Ready)
+    for (uint32_t i = 0; i < gnbNodes.GetN(); ++i)
+    {
+        std::ostringstream path;
+        path << "/NodeList/" << gnbNodes.Get(i)->GetId()
+             << "/DeviceList/0/NrGnbRrc/HandoverEndOk";
+        Config::Connect(path.str(), MakeCallback(&GnbHandoverEndOkCallback));
     }
 
     // Handover callbacks to UEs
