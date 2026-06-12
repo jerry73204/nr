@@ -163,6 +163,14 @@ struct HandoverEvent
 std::vector<HandoverEvent> g_handoverEvents;
 std::string g_resultsOutputPath;  // Path for results summary file
 
+struct PredictionRecord {
+    double timestampS;
+    uint64_t imsi;
+    uint16_t servingCell;
+    uint16_t predictedTarget;  // 0 = no prediction
+};
+std::vector<PredictionRecord> g_predictionLog;
+
 //==============================================================================
 // Handover Prediction Algorithm (Same as nr-mec-handover.cc)
 //==============================================================================
@@ -391,6 +399,9 @@ MeasurementReportCallback(std::string path,
     // Update prediction file
     HandoverPredictionFile::GetInstance().UpdatePrediction(
         imsi, cellId, predictedTarget, targetEdgeIp, servingRsrp, rsrpTrend);
+
+    // Log prediction for accuracy analysis at simulation end
+    g_predictionLog.push_back({Simulator::Now().GetSeconds(), imsi, cellId, predictedTarget});
 }
 
 /**
@@ -983,6 +994,142 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
                     << (event.success ? 1 : 0) << "\n";
     }
 
+    // --- Prediction accuracy analysis ---
+    struct PredictionAnalysis {
+        double hoStartS;
+        uint64_t imsi;
+        uint16_t sourceCell;
+        uint16_t targetCell;
+        uint16_t lastPredicted;
+        bool correct;
+        double leadTimeMs;  // contiguous correct-prediction window before HO (-1 if none)
+    };
+    std::vector<PredictionAnalysis> predAnalysis;
+
+    int predCorrect = 0;
+    int predEvaluated = 0;
+    double predLeadTotal = 0.0;
+    int predLeadCount = 0;
+    double predLeadMin = 1e9;
+    double predLeadMax = 0.0;
+
+    for (const auto& ho : g_handoverEvents)
+    {
+        if (!ho.success) continue;
+        double hoStartS = ho.startTime.GetSeconds();
+
+        // Find the most recent prediction before HO start
+        uint16_t lastPredicted = 0;
+        for (int i = (int)g_predictionLog.size() - 1; i >= 0; --i)
+        {
+            if (g_predictionLog[i].timestampS <= hoStartS)
+            {
+                lastPredicted = g_predictionLog[i].predictedTarget;
+                break;
+            }
+        }
+
+        bool correct = (lastPredicted != 0 && lastPredicted == ho.targetCell);
+
+        // Find contiguous run of correct predictions ending just before HO start.
+        // A gap > 1s between consecutive records breaks the run.
+        double leadTimeMs = -1.0;
+        if (correct)
+        {
+            double runStartS = hoStartS;
+            double prevS = hoStartS;
+            for (int i = (int)g_predictionLog.size() - 1; i >= 0; --i)
+            {
+                const auto& p = g_predictionLog[i];
+                if (p.timestampS > hoStartS) continue;
+                if (prevS - p.timestampS > 1.0) break;
+                if (p.predictedTarget != ho.targetCell) break;
+                runStartS = p.timestampS;
+                prevS = p.timestampS;
+            }
+            leadTimeMs = (hoStartS - runStartS) * 1000.0;
+        }
+
+        predAnalysis.push_back({hoStartS, ho.imsi, ho.sourceCell, ho.targetCell,
+                                 lastPredicted, correct, leadTimeMs});
+        predEvaluated++;
+        if (correct)
+        {
+            predCorrect++;
+            predLeadTotal += leadTimeMs;
+            predLeadCount++;
+            if (leadTimeMs < predLeadMin) predLeadMin = leadTimeMs;
+            if (leadTimeMs > predLeadMax) predLeadMax = leadTimeMs;
+        }
+    }
+
+    // Count false-positive prediction episodes: a contiguous run of the same non-zero
+    // predicted target that is NOT followed by a handover to that target within 1s of
+    // the episode end.
+    int fpEpisodes = 0;
+    {
+        uint16_t prevTarget = 0;
+        double episodeStartS = 0.0;
+        for (size_t i = 0; i <= g_predictionLog.size(); ++i)
+        {
+            uint16_t curTarget = (i < g_predictionLog.size()) ? g_predictionLog[i].predictedTarget : 0;
+            double curTimestampS = (i < g_predictionLog.size()) ? g_predictionLog[i].timestampS : 0.0;
+
+            if (curTarget != prevTarget)
+            {
+                if (prevTarget != 0)
+                {
+                    double episodeEndS = (i > 0) ? g_predictionLog[i - 1].timestampS : episodeStartS;
+                    bool matched = false;
+                    for (const auto& ho : g_handoverEvents)
+                    {
+                        if (ho.success && ho.targetCell == prevTarget &&
+                            ho.startTime.GetSeconds() >= episodeStartS &&
+                            ho.startTime.GetSeconds() <= episodeEndS + 1.0)
+                        {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched) fpEpisodes++;
+                }
+                prevTarget = curTarget;
+                episodeStartS = curTimestampS;
+            }
+        }
+    }
+
+    double predAccuracyPct = predEvaluated > 0 ? (100.0 * predCorrect / predEvaluated) : 0.0;
+    double avgLeadTimeMs = predLeadCount > 0 ? (predLeadTotal / predLeadCount) : 0.0;
+
+    resultsFile << "\n[PREDICTION_ACCURACY]\n";
+    resultsFile << "metric,value\n";
+    resultsFile << "handovers_evaluated," << predEvaluated << "\n";
+    resultsFile << "correct_predictions," << predCorrect << "\n";
+    resultsFile << "missed_predictions," << (predEvaluated - predCorrect) << "\n";
+    resultsFile << "prediction_accuracy_percent," << std::fixed << std::setprecision(2) << predAccuracyPct << "\n";
+    resultsFile << "false_positive_episodes," << fpEpisodes << "\n";
+    if (predLeadCount > 0)
+    {
+        resultsFile << "avg_lead_time_ms," << std::fixed << std::setprecision(1) << avgLeadTimeMs << "\n";
+        resultsFile << "min_lead_time_ms," << std::fixed << std::setprecision(1) << predLeadMin << "\n";
+        resultsFile << "max_lead_time_ms," << std::fixed << std::setprecision(1) << predLeadMax << "\n";
+    }
+
+    resultsFile << "\n[PREDICTION_EVENTS]\n";
+    resultsFile << "ho_start_s,imsi,source_cell,target_cell,last_predicted,correct,lead_time_ms\n";
+    for (const auto& pa : predAnalysis)
+    {
+        resultsFile << std::fixed << std::setprecision(3)
+                    << pa.hoStartS << ","
+                    << pa.imsi << ","
+                    << pa.sourceCell << ","
+                    << pa.targetCell << ","
+                    << pa.lastPredicted << ","
+                    << (pa.correct ? 1 : 0) << ","
+                    << std::setprecision(1) << pa.leadTimeMs << "\n";
+    }
+
     // Output per-site connection periods with loss counts
     resultsFile << "\n[SITE_CONNECTION]\n";
     resultsFile << "site_id,connect_start_s,connect_end_s,packets_lost\n";
@@ -1049,14 +1196,17 @@ WriteSimulationResults(const std::string& outputPath, double simTime, double sla
     std::cout << "  HANDOVER METRICS:\n";
     std::cout << "    Total Handovers:   " << totalHandovers << "\n";
     std::cout << "    Successful:        " << successfulHandovers << " (" << std::fixed << std::setprecision(2) << handoverSuccessRate << "%)\n";
-    // std::cout << "    Inter-Site:        " << interSiteHandovers << "\n";
-    // std::cout << "    Intra-Site:        " << intraSiteHandovers << "\n";
-    // if (successfulHandovers > 0)
-    // {
-    //     std::cout << "    Avg HO Duration:   " << std::fixed << std::setprecision(3) << avgHandoverDuration << " ms\n";
-    //     std::cout << "    Min HO Duration:   " << std::fixed << std::setprecision(3) << minHandoverDuration << " ms\n";
-    //     std::cout << "    Max HO Duration:   " << std::fixed << std::setprecision(3) << maxHandoverDuration << " ms\n";
-    // }
+    std::cout << "───────────────────────────────────────────────────────────\n";
+    std::cout << "  PREDICTION ACCURACY:\n";
+    std::cout << "    Evaluated:         " << predEvaluated << " handovers\n";
+    std::cout << "    Correct:           " << predCorrect << " (" << std::fixed << std::setprecision(1) << predAccuracyPct << "%)\n";
+    std::cout << "    Missed:            " << (predEvaluated - predCorrect) << "\n";
+    std::cout << "    False Pos. Eps.:   " << fpEpisodes << "\n";
+    if (predLeadCount > 0)
+    {
+        std::cout << "    Avg Lead Time:     " << std::fixed << std::setprecision(1) << avgLeadTimeMs << " ms\n";
+        std::cout << "    Min/Max Lead:      " << std::setprecision(1) << predLeadMin << " / " << predLeadMax << " ms\n";
+    }
     std::cout << "═══════════════════════════════════════════════════════════\n";
     std::cout << "  Results saved to:    " << outputPath << "\n";
     std::cout << "═══════════════════════════════════════════════════════════\n\n";
