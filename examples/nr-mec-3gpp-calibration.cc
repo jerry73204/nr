@@ -64,6 +64,7 @@
 
 #include <cerrno>
 #include <cmath>
+#include <cstring>
 #include <ctime>
 #include <deque>
 #include <fstream>
@@ -1054,13 +1055,32 @@ GenerateExperimentDir()
 }
 
 /**
- * @brief Create a directory if it doesn't exist
- * @param path Directory path to create
+ * @brief Create a directory and any missing parents (like "mkdir -p")
+ * @param path Directory path to create (may contain nested components)
  * @return true if directory exists or was created successfully
  */
 bool
 CreateDirectoryIfNeeded(const std::string& path)
 {
+    if (path.empty())
+    {
+        return false;
+    }
+
+    // Walk each '/' separated component, creating it if missing
+    for (std::size_t pos = path.find('/'); pos != std::string::npos; pos = path.find('/', pos + 1))
+    {
+        if (pos == 0)
+        {
+            continue; // leading '/' of an absolute path
+        }
+        std::string component = path.substr(0, pos);
+        if (mkdir(component.c_str(), 0755) != 0 && errno != EEXIST)
+        {
+            return false;
+        }
+    }
+
     return mkdir(path.c_str(), 0755) == 0 || errno == EEXIST;
 }
 
@@ -1401,18 +1421,11 @@ main(int argc, char* argv[])
         experimentDir = "experiment_data/" + experimentDir + "/" + timestamp;
     }
 
-    // Create experiment directory (and parents if needed)
-    CreateDirectoryIfNeeded("experiment_data");
-    // Extract parent dir (e.g. "experiment_data/myName") and create it if present
-    auto lastSlash = experimentDir.rfind('/');
-    if (lastSlash != std::string::npos)
-    {
-        std::string parentDir = experimentDir.substr(0, lastSlash);
-        CreateDirectoryIfNeeded(parentDir);
-    }
+    // Create experiment directory (and any missing parents)
     if (!CreateDirectoryIfNeeded(experimentDir))
     {
-        NS_LOG_WARN("Failed to create experiment directory: " << experimentDir);
+        NS_ABORT_MSG("Failed to create experiment directory: " << experimentDir << " ("
+                                                              << std::strerror(errno) << ")");
     }
 
     // Resolve actual UE speed for built-in waypoint paths (some override ueSpeed)
