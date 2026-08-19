@@ -1388,8 +1388,8 @@ main(int argc, char* argv[])
         Config::SetDefault("ns3::RealtimeSimulatorImpl::SynchronizationMode",
                            StringValue("HardLimit"));
         Config::SetDefault("ns3::RealtimeSimulatorImpl::HardLimit",
-                           TimeValue(MilliSeconds(200)));
-        NS_LOG_UNCOND("Real-time simulator enabled (HardLimit mode, 200ms limit)");
+                           TimeValue(MilliSeconds(500)));
+        NS_LOG_UNCOND("Real-time simulator enabled (HardLimit mode, 500ms limit)");
     }
 
     // Update global handover interrupt parameters
