@@ -1259,6 +1259,7 @@ main(int argc, char* argv[])
 
     // Remote Host (traffic source / controller)
     bool enableRemoteHost = true;
+    bool enablePcapTrace = false;                // Capture pcap on all P2P/CSMA devices into experimentDir
     std::string tapRemoteHostDevice = "tap_remote";
     double wanDelayMs = 20.0;        // WAN delay in milliseconds (one-way)
     std::string wanDataRate = "1Gbps";  // WAN link data rate
@@ -1330,6 +1331,7 @@ main(int argc, char* argv[])
     cmd.AddValue("resultsOutputPath", "Override results summary path (default: experimentDir/result.csv)", resultsOutputPath);
     cmd.AddValue("measurementOutputPath", "Override measurement report CSV path (default: experimentDir/measurements.csv)", measurementOutputPath);
     cmd.AddValue("trajectoryLogInterval", "Trajectory logging interval in seconds", trajectoryLogInterval);
+    cmd.AddValue("enablePcapTrace", "Capture pcap on all P2P/CSMA devices into experimentDir", enablePcapTrace);
 
     // Latency measurement
     cmd.AddValue("slaThresholdMs", "SLA threshold in milliseconds", slaThresholdMs);
@@ -2458,6 +2460,21 @@ main(int argc, char* argv[])
         Ptr<NrGnbRrc> gnbRrc = gnbNodes.Get(i)->GetDevice(0)->GetObject<NrGnbNetDevice>()->GetRrc();
         gnbRrc->AddUeMeasReportConfig(reportConfigA3Early);
         // gnbRrc->AddUeMeasReportConfig(reportConfigA3);
+    }
+
+    if (enablePcapTrace)
+    {
+        PointToPointHelper pcapP2p;
+        pcapP2p.EnablePcapAll(experimentDir + "/p2p", false);
+        CsmaHelper pcapCsma;
+        pcapCsma.EnablePcapAll(experimentDir + "/csma", false);
+        NS_LOG_UNCOND("Pcap tracing enabled -> " << experimentDir << "/{p2p,csma}-*.pcap");
+        NS_LOG_UNCOND("  pgw node id: " << pgw->GetId());
+        for (uint32_t i = 0; i < edgeServerNodes.GetN(); ++i)
+        {
+            NS_LOG_UNCOND("  edge " << i << " node id: " << edgeServerNodes.Get(i)->GetId()
+                          << ", ghost node id: " << ghostNodes.Get(i)->GetId());
+        }
     }
 
     //--------------------------------------------------------------------------
