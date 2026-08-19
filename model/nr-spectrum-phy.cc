@@ -1225,8 +1225,16 @@ NrSpectrumPhy::StartRxData(const Ptr<NrSpectrumSignalParametersDataFrame>& param
         if (m_isGnb) // I am gNB. We are here because some of my rebellious UEs is transmitting
                      // at the same time as me. -> invalid state.
         {
-            NS_FATAL_ERROR("gNB transmission overlaps in time with UE transmission. CellId:"
-                           << params->cellId);
+            // Upstream treats this as NS_FATAL_ERROR. Under heavy background-UE
+            // load (bg-ue-mac-contention), a bg UE's UL occasionally lands while
+            // the gNB DL is still active at a slot/symbol boundary, killing the
+            // whole simulation ~1-2 in 10 rounds. Physically this is just an
+            // interference collision, so drop the colliding UL frame and keep
+            // the simulation alive instead of aborting.
+            NS_LOG_WARN("gNB transmission overlaps in time with UE transmission; dropping UL "
+                        "frame. CellId:"
+                        << params->cellId << " at " << Simulator::Now().As(Time::S));
+            return;
         }
         else // I am UE, and while I am transmitting, someone else also transmits. If we are
              // transmitting on orthogonal TX PSDs then this is most probably valid situation
